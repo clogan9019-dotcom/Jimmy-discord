@@ -26,14 +26,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 BITNET_REPO="https://github.com/microsoft/BitNet.git"
 BITNET_DIR="${SCRIPT_DIR}/bitnet_cpp_src"
-# We build bitnet.cpp using the official Microsoft model (in setup_env.py's
-# allowlist) to generate the correct kernel headers, then convert and quantize
-# the heretic fine-tune so the bot uses it for inference.
 BUILD_MODEL_REPO="microsoft/BitNet-b1.58-2B-4T"
 BUILD_MODEL_DIR="${SCRIPT_DIR}/models/BitNet-b1.58-2B-4T"
 HERETIC_REPO="askalgore/bitnet-b1.58-2B-4T-heretic"
 HERETIC_DIR="${SCRIPT_DIR}/models/heretic"
 PYTHON_MIN_VERSION="3.11"
+
+# Shorthand — always use these instead of bare pip/python to avoid
+# accidentally hitting the system interpreter (PEP 668 blocks that).
+VENV_PYTHON="${VENV_DIR}/bin/python"
+VENV_PIP="${VENV_DIR}/bin/pip"
 
 # ── Architecture check ────────────────────────────────────────────────────────
 ARCH="$(uname -m)"
@@ -43,8 +45,6 @@ if [[ "${ARCH}" != "aarch64" ]]; then
 fi
 
 # ── Space-in-path check ───────────────────────────────────────────────────────
-# huggingface-cli (called internally by setup_env.py) can fail when the
-# working directory path contains spaces. Warn and offer a workaround.
 if [[ "${SCRIPT_DIR}" == *" "* ]]; then
     warn "Your install path contains a space:"
     warn "  ${SCRIPT_DIR}"
@@ -107,20 +107,29 @@ success "Using Python: $("${PYTHON_CMD}" --version)"
 
 # ── Step 3: Bot virtual environment ──────────────────────────────────────────
 info "Step 3/6: Creating Python virtual environment at ${VENV_DIR}…"
+
+# If the venv exists but its Python binary is missing or broken, recreate it.
+if [[ -d "${VENV_DIR}" ]]; then
+    if [[ ! -x "${VENV_PYTHON}" ]] || ! "${VENV_PYTHON}" -c "import sys" &>/dev/null; then
+        warn "Existing venv is broken — recreating…"
+        rm -rf "${VENV_DIR}"
+    else
+        info "Virtual environment already exists and is healthy — skipping creation."
+    fi
+fi
+
 if [[ ! -d "${VENV_DIR}" ]]; then
     "${PYTHON_CMD}" -m venv "${VENV_DIR}"
     success "Virtual environment created."
-else
-    info "Virtual environment already exists — skipping."
 fi
 
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
-
-pip install --upgrade pip "setuptools<82" wheel --quiet
+# Always use explicit venv paths — never rely on 'source activate' in scripts.
+# Debian/Raspberry Pi OS (PEP 668) blocks system-pip installs; using the venv
+# pip directly is the only safe approach.
+"${VENV_PIP}" install --upgrade pip "setuptools<82" wheel --quiet
 info "Installing bot Python dependencies…"
-pip install -r "${SCRIPT_DIR}/requirements.txt" --quiet
-pip install huggingface_hub --quiet
+"${VENV_PIP}" install -r "${SCRIPT_DIR}/requirements.txt" --quiet
+"${VENV_PIP}" install huggingface_hub --quiet
 success "Bot Python dependencies installed."
 
 # ── Step 4: Clone BitNet repository ──────────────────────────────────────────
@@ -137,11 +146,10 @@ else
 fi
 
 # Install BitNet runtime dependencies directly.
-# BitNet's requirements.txt (and its sub-files) pin torch~=2.2.1 which has
-# no wheel for Python 3.11+. We skip those files entirely and install only
-# what setup_env.py actually needs, with unpinned/compatible versions.
+# BitNet's requirements.txt pins torch~=2.2.1 which has no wheel for Python 3.11+.
+# We skip those files and install only what setup_env.py actually needs.
 info "Installing BitNet runtime dependencies (skipping pinned requirements files)…"
-pip install \
+"${VENV_PIP}" install \
     numpy \
     sentencepiece \
     transformers \
@@ -149,7 +157,7 @@ pip install \
     protobuf \
     huggingface_hub \
     --quiet 2>/dev/null || \
-pip install \
+"${VENV_PIP}" install \
     numpy \
     sentencepiece \
     transformers \
@@ -157,9 +165,9 @@ pip install \
     protobuf \
     huggingface_hub
 
-info "Installing PyTorch CPU (latest build compatible with Python 3.13)…"
-pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
-    pip install torch --index-url https://download.pytorch.org/whl/cpu
+info "Installing PyTorch CPU…"
+"${VENV_PIP}" install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
+    "${VENV_PIP}" install torch --index-url https://download.pytorch.org/whl/cpu
 success "BitNet dependencies installed."
 
 # ── Step 5: Build bitnet.cpp, then quantize the heretic model ─────────────────
@@ -172,9 +180,6 @@ LLAMA_QUANTIZE="${BITNET_DIR}/build/bin/llama-quantize"
 CONVERT_SCRIPT="${BITNET_DIR}/3rdparty/llama.cpp/convert_hf_to_gguf.py"
 
 # ── 5a: Build bitnet.cpp using the official Microsoft model ───────────────────
-# setup_env.py only supports a hardcoded repo list; we use the Microsoft base
-# model to generate the kernel headers and compile the binary. The resulting
-# binary works for any model with the same 2B-4T architecture (including heretic).
 mkdir -p "${BUILD_MODEL_DIR}"
 cd "${BITNET_DIR}"
 
@@ -182,8 +187,8 @@ if [[ -f "${LLAMA_QUANTIZE}" ]]; then
     info "BitNet binary already compiled — skipping build step."
 else
     # Pre-download the Microsoft model using Python's snapshot_download.
-    # This bypasses setup_env.py's internal huggingface-cli call, which can
-    # fail when the install path contains spaces (e.g. "Jimmy 2/Jimmy-discord").
+    # This bypasses setup_env.py's internal huggingface-cli call, which fails
+    # when the install path contains spaces.
     # setup_env.py appends the model name to --model-dir, so the effective
     # download target is BUILD_MODEL_DIR/<model_name>.
     BUILD_MODEL_NAME="$(basename "${BUILD_MODEL_REPO}")"
@@ -193,7 +198,7 @@ else
     if [[ ! -f "${BUILD_MODEL_DOWNLOAD_DIR}/config.json" ]]; then
         info "Phase 1/3: Downloading ${BUILD_MODEL_REPO} model…"
         info "(~2 GB — may take 10-20 min depending on your connection)"
-        "${VENV_DIR}/bin/python" - <<PYEOF
+        "${VENV_PYTHON}" - <<PYEOF
 import sys
 from huggingface_hub import snapshot_download
 print("Downloading ${BUILD_MODEL_REPO} ...", flush=True)
@@ -211,7 +216,7 @@ PYEOF
 
     info "Phase 1/3: Building bitnet.cpp via setup_env.py (using ${BUILD_MODEL_REPO})…"
     info "(Compiling only — model already downloaded — takes 15-30 min)"
-    "${VENV_DIR}/bin/python" setup_env.py \
+    "${VENV_PYTHON}" setup_env.py \
         --hf-repo "${BUILD_MODEL_REPO}" \
         --model-dir "${BUILD_MODEL_DIR}" \
         -q i2_s
@@ -226,11 +231,10 @@ mkdir -p "${HERETIC_DIR}"
 if [[ -f "${HERETIC_GGUF}" ]]; then
     info "Heretic GGUF already present — skipping download and conversion."
 else
-    # Check if raw model files already downloaded (previous attempt)
     if [[ ! -f "${HERETIC_DIR}/config.json" ]]; then
         info "Phase 2/3: Downloading heretic model (${HERETIC_REPO})…"
         info "(~2 GB — may take 10-20 min depending on your connection)"
-        "${VENV_DIR}/bin/python" - <<PYEOF
+        "${VENV_PYTHON}" - <<PYEOF
 import sys
 from huggingface_hub import snapshot_download
 print(f"Downloading ${HERETIC_REPO} ...", flush=True)
@@ -254,7 +258,7 @@ PYEOF
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
         info "Converting to F16 GGUF…"
-        "${VENV_DIR}/bin/python" "${CONVERT_SCRIPT}" \
+        "${VENV_PYTHON}" "${CONVERT_SCRIPT}" \
             "${HERETIC_DIR}" \
             --outfile "${HERETIC_F16}" \
             --outtype f16
