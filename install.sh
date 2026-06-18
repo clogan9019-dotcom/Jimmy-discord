@@ -125,10 +125,13 @@ fi
 # the latest compatible torch separately.
 info "Installing BitNet Python requirements…"
 if [[ -f "${BITNET_DIR}/requirements.txt" ]]; then
-    # Strip the torch line so pip doesn't reject the whole file
-    grep -iv "^torch" "${BITNET_DIR}/requirements.txt" > /tmp/bitnet_reqs_notorch.txt || true
-    pip install -r /tmp/bitnet_reqs_notorch.txt --quiet 2>/dev/null || \
-        pip install -r /tmp/bitnet_reqs_notorch.txt         # retry with output if quiet fails
+    # Strip the pinned torch line (torch~=2.2.1 has no wheel for Python 3.11+).
+    # Write the filtered file inside BITNET_DIR so relative -r paths resolve correctly.
+    grep -iv "^torch" "${BITNET_DIR}/requirements.txt" > "${BITNET_DIR}/requirements_notorch.txt" || true
+    # Run pip from inside BITNET_DIR so sub-requirement paths (3rdparty/...) resolve
+    (cd "${BITNET_DIR}" && pip install -r requirements_notorch.txt --quiet 2>/dev/null) || \
+    (cd "${BITNET_DIR}" && pip install -r requirements_notorch.txt)
+    rm -f "${BITNET_DIR}/requirements_notorch.txt"
 fi
 info "Installing PyTorch (CPU-only, latest compatible with Python $("${PYTHON_CMD}" --version | cut -d' ' -f2))…"
 pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
