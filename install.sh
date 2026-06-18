@@ -259,8 +259,8 @@ PYEOF
     HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
 
     if [[ -f "${HERETIC_F16}" && ! -f "${HERETIC_GGUF}" ]]; then
-        warn "Found an intermediate F16 GGUF without the final i2_s model — removing it to avoid reusing a partial failed conversion."
-        rm -f "${HERETIC_F16}"
+        info "Found existing F16 GGUF intermediate — using it for i2_s quantization."
+        info "If this file is from a failed/partial conversion, delete it and rerun: rm -f \"${HERETIC_F16}\""
     fi
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
