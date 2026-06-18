@@ -145,37 +145,58 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/de
     pip install torch --index-url https://download.pytorch.org/whl/cpu
 success "BitNet dependencies installed."
 
-# ── Step 5: Setup BitNet (build + model download) ────────────────────────────
-info "Step 5/6: Running BitNet setup_env.py…"
-info "This downloads the model from Hugging Face, generates kernel headers,"
-info "and compiles the project. It will take 10-30 minutes on Raspberry Pi."
+# ── Step 5: Download model then run BitNet setup ──────────────────────────────
+info "Step 5/6: Setting up BitNet model and building project…"
+info "This will take 15-40 minutes on Raspberry Pi — please be patient."
 echo ""
 
 mkdir -p "${MODEL_DIR}"
 
-# setup_env.py must be run from the bitnet_cpp_src directory
+GGUF_FILE="${MODEL_DIR}/ggml-model-i2_s.gguf"
+
+# ── 5a: Download model from Hugging Face ──────────────────────────────────────
+if [[ -d "${MODEL_DIR}" ]] && [[ "$(ls -A "${MODEL_DIR}" 2>/dev/null)" ]]; then
+    info "Model directory already has files — skipping download."
+else
+    info "Downloading model '${MODEL_HF_ID}' from Hugging Face…"
+    info "(This is ~1-2 GB and may take 10-20 minutes on your connection.)"
+    "${VENV_DIR}/bin/python" - <<PYEOF
+import sys
+from huggingface_hub import snapshot_download
+model_id = "${MODEL_HF_ID}"
+local_dir = "${MODEL_DIR}"
+print(f"Downloading {model_id} -> {local_dir}", flush=True)
+try:
+    snapshot_download(repo_id=model_id, local_dir=local_dir)
+    print("Download complete.", flush=True)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    success "Model downloaded to ${MODEL_DIR}."
+fi
+
+# ── 5b: Run setup_env.py to generate kernel headers + build ───────────────────
+# setup_env.py must be run from inside bitnet_cpp_src.
+# It uses --model-dir when the model is already local; the --hf-repo flag
+# only accepts a hardcoded allowlist that does not include our model.
 cd "${BITNET_DIR}"
 
-# Check if already set up (GGUF file exists)
-GGUF_FILE="${MODEL_DIR}/ggml-model-i2_s.gguf"
 if [[ -f "${GGUF_FILE}" ]] && [[ -f "${BITNET_DIR}/build/bin/llama-cli" ]]; then
-    info "Model and build already present — skipping setup_env.py."
+    info "GGUF model and compiled binary already present — skipping build."
 else
-    info "Running: python setup_env.py --hf-repo-id ${MODEL_HF_ID} --model-dir ${MODEL_DIR} -q i2_s"
+    info "Running setup_env.py (generates kernel headers + compiles with CMake)…"
     "${VENV_DIR}/bin/python" setup_env.py \
-        --hf-repo-id "${MODEL_HF_ID}" \
         --model-dir "${MODEL_DIR}" \
         -q i2_s
-    success "BitNet setup complete."
+    success "BitNet build complete."
 fi
 
 cd "${SCRIPT_DIR}"
 
-# Verify the GGUF model file exists
 if [[ ! -f "${GGUF_FILE}" ]]; then
-    warn "Expected model file not found at: ${GGUF_FILE}"
-    warn "Check the models/ directory for the actual .gguf filename and"
-    warn "update 'bitnet.model' in config.yaml accordingly."
+    warn "Expected GGUF file not found at: ${GGUF_FILE}"
+    warn "Check ${MODEL_DIR} for the actual .gguf filename and update config.yaml."
 else
     success "Model ready: ${GGUF_FILE}"
 fi
