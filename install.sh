@@ -259,6 +259,29 @@ PYEOF
     HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
+        # Copy tokenizer.model from the already-downloaded MS base model, or
+        # download it directly. The heretic fine-tune shares the same tokenizer
+        # but ships only tokenizer.json; the BitNet GGUF converter needs .model.
+        if [[ ! -f "${HERETIC_DIR}/tokenizer.model" ]]; then
+            BUILD_MODEL_DOWNLOAD_DIR="${BUILD_MODEL_DIR}/$(basename "${BUILD_MODEL_REPO}")"
+            if [[ -f "${BUILD_MODEL_DOWNLOAD_DIR}/tokenizer.model" ]]; then
+                info "Copying tokenizer.model from Microsoft base model…"
+                cp "${BUILD_MODEL_DOWNLOAD_DIR}/tokenizer.model" "${HERETIC_DIR}/tokenizer.model"
+            else
+                info "Downloading tokenizer.model from HuggingFace…"
+                "${VENV_PYTHON}" -c "
+import sys, shutil
+from huggingface_hub import hf_hub_download
+try:
+    p = hf_hub_download(repo_id='${BUILD_MODEL_REPO}', filename='tokenizer.model')
+    shutil.copy(p, '${HERETIC_DIR}/tokenizer.model')
+    print('tokenizer.model ready.', flush=True)
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr); sys.exit(1)
+"
+            fi
+        fi
+
         info "Patching heretic config.json architecture name (BitNetForCausalLM → BitnetForCausalLM)…"
         sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' "${HERETIC_DIR}/config.json"
         info "Converting to F16 GGUF…"
