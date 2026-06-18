@@ -402,6 +402,10 @@ if "self._bitnet_skip_weight_quant" not in text:
         raise SystemExit("Could not patch BitNet converter write_tensors block; upstream changed.")
     text = text.replace(old_write, new_write, 1)
     path.write_text(text)
+
+# Always write the file because tokenizer patches above may be applied even when
+# the weight_scale patch is already present from a previous installer run.
+path.write_text(text)
 PYEOF
         info "Converting to F16 GGUF…"
         "${VENV_PYTHON}" "${CONVERT_SCRIPT}" \
