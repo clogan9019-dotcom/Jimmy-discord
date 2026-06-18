@@ -461,7 +461,12 @@ function ConvertTo-WslPath {
 
 function Quote-BashArg {
     param([Parameter(Mandatory = $true)][string]$Arg)
-    return "'" + $Arg.Replace("'", "'\"'\"'") + "'"
+    # Windows paths converted with wslpath should not contain single quotes in normal use.
+    # Keep this simple/robust for Windows PowerShell 5.1 parsing.
+    if ($Arg.Contains("'")) {
+        throw "WSL path contains a single quote, which this installer cannot safely quote: $Arg"
+    }
+    return "'" + $Arg + "'"
 }
 
 function Invoke-WslScript {
