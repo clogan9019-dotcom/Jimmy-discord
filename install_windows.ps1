@@ -138,7 +138,7 @@ function Get-VSInstallPath {
     $vswhere = Get-VSWherePath
     if (-not $vswhere) { return $null }
 
-    $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    $installPath = & $vswhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($installPath)) {
         return $installPath.Trim()
     }
@@ -150,26 +150,49 @@ function Test-VSBuildTools {
     return -not [string]::IsNullOrWhiteSpace((Get-VSInstallPath))
 }
 
+function Test-VSComponentInstalled {
+    param([Parameter(Mandatory = $true)][string[]]$ComponentIds)
+
+    $vswhere = Get-VSWherePath
+    if (-not $vswhere) { return $false }
+
+    $args = @("-latest", "-products", "*", "-property", "installationPath", "-requires") + $ComponentIds
+    $installPath = & $vswhere @args 2>$null
+    return ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($installPath))
+}
+
 function Test-ClangCLToolset {
     $installPath = Get-VSInstallPath
     if ([string]::IsNullOrWhiteSpace($installPath)) { return $false }
 
-    $clangExeCandidates = @(
-        (Join-Path $installPath "VC\Tools\Llvm\x64\bin\clang-cl.exe"),
-        (Join-Path $installPath "VC\Tools\Llvm\bin\clang-cl.exe")
-    )
-    $hasClangExe = $false
-    foreach ($candidate in $clangExeCandidates) {
-        if (Test-Path $candidate) { $hasClangExe = $true; break }
+    # First ask vswhere. This is more reliable than guessing VS's on-disk layout.
+    if (Test-VSComponentInstalled @(
+        "Microsoft.VisualStudio.Component.VC.Llvm.Clang",
+        "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+    )) {
+        return $true
     }
 
-    $toolsetCandidates = @(
-        (Join-Path $installPath "MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\ClangCL\Toolset.props"),
-        (Join-Path $installPath "MSBuild\Microsoft\VC\v170\Platforms\Win32\PlatformToolsets\ClangCL\Toolset.props")
+    # Fallback filesystem check. VS layouts vary between Community/BuildTools and versions.
+    $hasClangExe = $false
+    $clangRoots = @(
+        (Join-Path $installPath "VC\Tools"),
+        (Join-Path $installPath "VC")
     )
+    foreach ($root in $clangRoots) {
+        if (Test-Path $root) {
+            $found = Get-ChildItem -Path $root -Filter "clang-cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $hasClangExe = $true; break }
+        }
+    }
+
     $hasToolset = $false
-    foreach ($candidate in $toolsetCandidates) {
-        if (Test-Path $candidate) { $hasToolset = $true; break }
+    $msbuildRoot = Join-Path $installPath "MSBuild\Microsoft\VC"
+    if (Test-Path $msbuildRoot) {
+        $found = Get-ChildItem -Path $msbuildRoot -Filter "Toolset.props" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\PlatformToolsets\(ClangCL|LLVM)\' } |
+            Select-Object -First 1
+        if ($found) { $hasToolset = $true }
     }
 
     return ($hasClangExe -and $hasToolset)
@@ -224,11 +247,18 @@ function Ensure-VSBuildTools {
 
     if (-not (Test-ClangCLToolset)) {
         $installPath = Get-VSInstallPath
-        Invoke-VSInstallerModify -InstallPath $installPath
+        try {
+            Invoke-VSInstallerModify -InstallPath $installPath
+        }
+        catch {
+            Write-Warn "Automatic Visual Studio modification failed: $($_.Exception.Message)"
+        }
     }
 
     if (-not (Test-ClangCLToolset)) {
-        throw "ClangCL is still missing. Open Visual Studio Installer -> Modify -> Individual components, then install: C++ Clang Compiler for Windows, and MSBuild support for LLVM (clang-cl) toolset. Then re-run this script."
+        Write-Warn "ClangCL still was not detected by the script. Continuing anyway; CMake will try ClangCL first, then fall back to the regular Visual Studio/MSVC generator."
+        Write-Warn "If CMake still says ClangCL is missing, close Visual Studio Installer, reopen this terminal, or manually install the two clang components."
+        return
     }
 
     Write-Ok "Visual Studio ClangCL toolset found."
