@@ -47,7 +47,7 @@ class DiscordBitNetBot(commands.Bot):
         self.start_time: float = 0.0
 
         self.model = BitNetModel(
-            executable=config.bitnet_executable,
+            src_dir=config.bitnet_src_dir,
             model_path=config.bitnet_model,
             threads=config.bitnet_threads,
             context_length=config.bitnet_context,
