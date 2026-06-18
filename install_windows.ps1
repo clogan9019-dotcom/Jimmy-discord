@@ -370,7 +370,7 @@ function Ensure-Ninja {
         return (Get-CommandSource "ninja")
     }
 
-    Install-WingetPackage -PackageId "Ninja-build.Ninja" -DisplayName "Ninja"
+    $null = Install-WingetPackage -PackageId "Ninja-build.Ninja" -DisplayName "Ninja"
     Refresh-Path
 
     if (-not (Get-Command "ninja" -ErrorAction SilentlyContinue)) {
@@ -389,7 +389,7 @@ function Ensure-ClangCl {
     }
 
     Write-Warn "clang-cl.exe was not found. Installing standalone LLVM with winget..."
-    Install-WingetPackage -PackageId "LLVM.LLVM" -DisplayName "LLVM/Clang"
+    $null = Install-WingetPackage -PackageId "LLVM.LLVM" -DisplayName "LLVM/Clang"
     Refresh-Path
 
     $clangCl = Find-ClangCl
@@ -485,6 +485,8 @@ function Build-BitNetQuantizer {
     Write-Info "Checking Ninja and clang-cl for a Windows Ninja build..."
     $ninjaPath = Ensure-Ninja
     $clangClPath = Ensure-ClangCl
+    Write-Info "Using Ninja: $ninjaPath"
+    Write-Info "Using clang-cl: $clangClPath"
 
     Write-Info "Configuring BitNet build with CMake / Ninja / clang-cl..."
     try {
