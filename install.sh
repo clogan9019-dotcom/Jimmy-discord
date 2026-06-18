@@ -233,15 +233,32 @@ mkdir -p "${HERETIC_DIR}"
 if [[ -f "${HERETIC_GGUF}" ]]; then
     info "Heretic GGUF already present — skipping download and conversion."
 else
+    NEED_HERETIC_DOWNLOAD=0
     if [[ ! -f "${HERETIC_DIR}/config.json" ]]; then
+        NEED_HERETIC_DOWNLOAD=1
+    elif [[ ! -f "${HERETIC_DIR}/model.safetensors" ]]; then
+        warn "Heretic config exists but model.safetensors is missing. The previous download is incomplete."
+        NEED_HERETIC_DOWNLOAD=1
+    else
+        heretic_weight_size="$(stat -c%s "${HERETIC_DIR}/model.safetensors" 2>/dev/null || echo 0)"
+        if (( heretic_weight_size < 1073741824 )); then
+            warn "Heretic model.safetensors is smaller than 1 GB. It is probably a partial/LFS-pointer file — deleting it."
+            rm -f "${HERETIC_DIR}/model.safetensors"
+            NEED_HERETIC_DOWNLOAD=1
+        fi
+    fi
+
+    if (( NEED_HERETIC_DOWNLOAD )); then
         info "Phase 2/3: Downloading heretic model (${HERETIC_REPO})…"
-        info "(~2 GB — may take 10-20 min depending on your connection)"
+        info "(~5 GB — may take a while depending on your connection)"
         "${VENV_PYTHON}" - <<PYEOF
+import os
 import sys
 from huggingface_hub import snapshot_download
 print(f"Downloading ${HERETIC_REPO} ...", flush=True)
 try:
-    snapshot_download(repo_id="${HERETIC_REPO}", local_dir="${HERETIC_DIR}")
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    snapshot_download(repo_id="${HERETIC_REPO}", local_dir="${HERETIC_DIR}", token=token)
     print("Download complete.", flush=True)
 except Exception as e:
     print(f"ERROR: {e}", file=sys.stderr)
@@ -250,6 +267,10 @@ PYEOF
         success "Heretic model downloaded."
     else
         info "Heretic model files already present — skipping download."
+    fi
+
+    if [[ ! -f "${HERETIC_DIR}/model.safetensors" ]] || (( $(stat -c%s "${HERETIC_DIR}/model.safetensors" 2>/dev/null || echo 0) < 1073741824 )); then
+        die "Heretic weights are still missing or too small: ${HERETIC_DIR}/model.safetensors. Delete models/heretic and rerun install.sh."
     fi
 
     # ── 5c: Convert heretic to GGUF and quantize to i2_s ─────────────────────
@@ -412,6 +433,10 @@ PYEOF
             "${HERETIC_DIR}" \
             --outfile "${HERETIC_F16}" \
             --outtype f16
+        if [[ ! -f "${HERETIC_F16}" ]] || (( $(stat -c%s "${HERETIC_F16}" 2>/dev/null || echo 0) < 1073741824 )); then
+            rm -f "${HERETIC_F16}"
+            die "F16 GGUF conversion produced a metadata-only/too-small file. The Heretic weights were not loaded correctly. Delete models/heretic and rerun install.sh."
+        fi
         success "F16 GGUF created."
     fi
 
