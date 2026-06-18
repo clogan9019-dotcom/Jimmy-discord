@@ -25,7 +25,8 @@
 param(
     [string]$HereticRepo = "askalgore/bitnet-b1.58-2B-4T-heretic",
     [switch]$KeepF16,
-    [switch]$SkipPrereqInstall
+    [switch]$SkipPrereqInstall,
+    [switch]$SkipWslQuantize
 )
 
 $ErrorActionPreference = "Stop"
@@ -444,6 +445,159 @@ function Invoke-CheckedVsDev {
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
     }
+}
+
+function ConvertTo-WslPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Get-Command "wsl.exe" -ErrorAction SilentlyContinue)) {
+        throw "wsl.exe was not found."
+    }
+    $out = & wsl.exe wslpath -a "$Path" 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($out)) {
+        throw "Could not convert Windows path to WSL path: $Path"
+    }
+    return (($out | Select-Object -Last 1).Trim())
+}
+
+function Quote-BashArg {
+    param([Parameter(Mandatory = $true)][string]$Arg)
+    return "'" + $Arg.Replace("'", "'\"'\"'") + "'"
+}
+
+function Invoke-WslScript {
+    param([Parameter(Mandatory = $true)][string]$ScriptText)
+    if (-not (Get-Command "wsl.exe" -ErrorAction SilentlyContinue)) {
+        throw "wsl.exe was not found."
+    }
+
+    $tmp = Join-Path $env:TEMP ("jimmy-wsl-" + [guid]::NewGuid().ToString() + ".sh")
+    Set-FileUtf8NoBom -Path $tmp -Text ($ScriptText -replace "`r`n", "`n")
+    try {
+        $tmpWsl = ConvertTo-WslPath $tmp
+        & wsl.exe -e bash $tmpWsl
+        if ($LASTEXITCODE -ne 0) {
+            throw "WSL command failed with exit code ${LASTEXITCODE}."
+        }
+    }
+    finally {
+        Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-WslAvailable {
+    if (-not (Get-Command "wsl.exe" -ErrorAction SilentlyContinue)) { return $false }
+    & wsl.exe -e sh -lc "uname -m >/dev/null 2>&1" | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Try-WslQuantizeF16 {
+    param(
+        [Parameter(Mandatory = $true)][string]$F16Path,
+        [Parameter(Mandatory = $true)][string]$OutputPath
+    )
+
+    if ($SkipWslQuantize) {
+        Write-Warn "Skipping WSL quantization because -SkipWslQuantize was supplied."
+        return $false
+    }
+    if (-not (Test-WslAvailable)) {
+        Write-Warn "WSL is not available, so Windows cannot do the final i2_s quantization automatically."
+        Write-Warn "Install Ubuntu from the Microsoft Store / 'wsl --install -d Ubuntu', then rerun if you want Windows-side quantization."
+        return $false
+    }
+    if (-not (Test-Path $F16Path)) {
+        Write-Warn "Cannot WSL-quantize because F16 GGUF does not exist: $F16Path"
+        return $false
+    }
+
+    Write-Info "Attempting final i2_s quantization through WSL..."
+    $f16Wsl = ConvertTo-WslPath $F16Path
+    $outWsl = ConvertTo-WslPath $OutputPath
+    $f16Q = Quote-BashArg $f16Wsl
+    $outQ = Quote-BashArg $outWsl
+
+    $script = @'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+need_pkgs=0
+for cmd in git cmake ninja python3 clang clang++; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        need_pkgs=1
+    fi
+done
+
+if [ "$need_pkgs" = "1" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "[INFO] Installing WSL build packages (you may be asked for your WSL sudo password)..."
+        sudo apt-get update
+        sudo apt-get install -y git cmake ninja-build clang build-essential python3
+    else
+        echo "[ERROR] Missing WSL build tools and apt-get is unavailable." >&2
+        exit 2
+    fi
+fi
+
+WORK="$HOME/.jimmy-bitnet-wsl"
+BITNET="$WORK/BitNet"
+mkdir -p "$WORK"
+
+if [ ! -d "$BITNET/.git" ]; then
+    echo "[INFO] Cloning Microsoft BitNet inside WSL..."
+    git clone --recurse-submodules https://github.com/microsoft/BitNet.git "$BITNET"
+else
+    echo "[INFO] Updating Microsoft BitNet inside WSL..."
+    git -C "$BITNET" pull --ff-only || true
+    git -C "$BITNET" submodule update --init --recursive
+fi
+
+cd "$BITNET"
+python3 utils/codegen_tl2.py --model bitnet_b1_58-3B --BM 160,320,320 --BK 96,96,96 --bm 32,32,32
+
+if [ ! -x build/bin/llama-quantize ]; then
+    rm -rf build
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBITNET_X86_TL2=OFF -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+    cmake --build build
+fi
+
+Q="$BITNET/build/bin/llama-quantize"
+if [ ! -x "$Q" ]; then
+    echo "[ERROR] WSL llama-quantize binary was not produced: $Q" >&2
+    exit 3
+fi
+
+F16=__F16_PATH__
+OUT=__OUT_PATH__
+mkdir -p "$(dirname "$OUT")"
+echo "[INFO] WSL quantizing $F16 -> $OUT"
+"$Q" "$F16" "$OUT" I2_S
+if [ ! -s "$OUT" ]; then
+    echo "[ERROR] WSL quantization did not produce output: $OUT" >&2
+    exit 4
+fi
+'@
+    $script = $script.Replace("__F16_PATH__", $f16Q).Replace("__OUT_PATH__", $outQ)
+
+    try {
+        Invoke-WslScript $script
+    }
+    catch {
+        Write-Warn "WSL quantization failed: $($_.Exception.Message)"
+        return $false
+    }
+
+    if (-not (Test-Path $OutputPath)) {
+        Write-Warn "WSL reported success but output file is missing: $OutputPath"
+        return $false
+    }
+    if ((Get-Item $OutputPath).Length -lt 100MB) {
+        Write-Warn "WSL quantized file is unexpectedly small; deleting it: $OutputPath"
+        Remove-Item -Force $OutputPath -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    Write-Ok "WSL final i2_s GGUF created: $OutputPath"
+    return $true
 }
 
 function Get-QuantizerPath {
@@ -872,12 +1026,24 @@ else {
         $OutputKind = "final i2_s GGUF"
     }
     else {
-        Write-Ok "Conversion-only output ready: $HereticF16"
-        Write-Warn "This is an F16 intermediate. It is larger than the final i2_s file, but it avoids the RAM-heavy HF conversion on the Pi."
-        Write-Warn "After transfer, the Pi installer will quantize this F16 GGUF to ggml-model-i2_s.gguf."
-        $OutputFile = $HereticF16
-        $RemoteFileName = "model-f16.gguf"
-        $OutputKind = "F16 intermediate GGUF"
+        $wslQuantized = Try-WslQuantizeF16 -F16Path $HereticF16 -OutputPath $HereticGGUF
+        if ($wslQuantized) {
+            if (-not $KeepF16) {
+                Write-Info "Removing intermediate F16 GGUF to save disk space..."
+                Remove-Item -Force $HereticF16
+            }
+            $OutputFile = $HereticGGUF
+            $RemoteFileName = "ggml-model-i2_s.gguf"
+            $OutputKind = "final i2_s GGUF produced by WSL"
+        }
+        else {
+            Write-Ok "Conversion-only output ready: $HereticF16"
+            Write-Warn "This is an F16 intermediate. It is larger than the final i2_s file, but it avoids the RAM-heavy HF conversion on the Pi."
+            Write-Warn "After transfer, the Pi installer will quantize this F16 GGUF to ggml-model-i2_s.gguf."
+            $OutputFile = $HereticF16
+            $RemoteFileName = "model-f16.gguf"
+            $OutputKind = "F16 intermediate GGUF"
+        }
     }
 }
 
