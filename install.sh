@@ -110,8 +110,8 @@ info "Step 3/6: Creating Python virtual environment at ${VENV_DIR}…"
 
 # If the venv exists but its Python binary is missing or broken, recreate it.
 if [[ -d "${VENV_DIR}" ]]; then
-    if [[ ! -x "${VENV_PYTHON}" ]] || ! "${VENV_PYTHON}" -c "import sys" &>/dev/null; then
-        warn "Existing venv is broken — recreating…"
+    if [[ ! -x "${VENV_PYTHON}" ]] || ! "${VENV_PYTHON}" -c "import sys" &>/dev/null || ! "${VENV_PIP}" --version &>/dev/null; then
+        warn "Existing venv is broken or was moved/renamed — recreating…"
         rm -rf "${VENV_DIR}"
     else
         info "Virtual environment already exists and is healthy — skipping creation."
