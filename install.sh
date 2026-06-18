@@ -119,11 +119,20 @@ else
     success "BitNet repository updated."
 fi
 
-# Install BitNet's own Python requirements inside our venv
+# Install BitNet's own Python requirements inside our venv.
+# BitNet pins torch~=2.2.1 which does not exist for Python 3.11+.
+# We install everything else from its requirements.txt, then install
+# the latest compatible torch separately.
 info "Installing BitNet Python requirements…"
 if [[ -f "${BITNET_DIR}/requirements.txt" ]]; then
-    pip install -r "${BITNET_DIR}/requirements.txt" --quiet
+    # Strip the torch line so pip doesn't reject the whole file
+    grep -iv "^torch" "${BITNET_DIR}/requirements.txt" > /tmp/bitnet_reqs_notorch.txt || true
+    pip install -r /tmp/bitnet_reqs_notorch.txt --quiet 2>/dev/null || \
+        pip install -r /tmp/bitnet_reqs_notorch.txt         # retry with output if quiet fails
 fi
+info "Installing PyTorch (CPU-only, latest compatible with Python $("${PYTHON_CMD}" --version | cut -d' ' -f2))…"
+pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
+    pip install torch --index-url https://download.pytorch.org/whl/cpu
 success "BitNet requirements installed."
 
 # ── Step 5: Setup BitNet (build + model download) ────────────────────────────
