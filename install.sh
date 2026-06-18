@@ -259,6 +259,8 @@ PYEOF
     HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
+        info "Patching heretic config.json architecture name (BitNetForCausalLM → BitnetForCausalLM)…"
+        sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' "${HERETIC_DIR}/config.json"
         info "Converting to F16 GGUF…"
         "${VENV_PYTHON}" "${CONVERT_SCRIPT}" \
             "${HERETIC_DIR}" \
