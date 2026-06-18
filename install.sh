@@ -119,24 +119,31 @@ else
     success "BitNet repository updated."
 fi
 
-# Install BitNet's own Python requirements inside our venv.
-# BitNet pins torch~=2.2.1 which does not exist for Python 3.11+.
-# We install everything else from its requirements.txt, then install
-# the latest compatible torch separately.
-info "Installing BitNet Python requirements…"
-if [[ -f "${BITNET_DIR}/requirements.txt" ]]; then
-    # Strip the pinned torch line (torch~=2.2.1 has no wheel for Python 3.11+).
-    # Write the filtered file inside BITNET_DIR so relative -r paths resolve correctly.
-    grep -iv "^torch" "${BITNET_DIR}/requirements.txt" > "${BITNET_DIR}/requirements_notorch.txt" || true
-    # Run pip from inside BITNET_DIR so sub-requirement paths (3rdparty/...) resolve
-    (cd "${BITNET_DIR}" && pip install -r requirements_notorch.txt --quiet 2>/dev/null) || \
-    (cd "${BITNET_DIR}" && pip install -r requirements_notorch.txt)
-    rm -f "${BITNET_DIR}/requirements_notorch.txt"
-fi
-info "Installing PyTorch (CPU-only, latest compatible with Python $("${PYTHON_CMD}" --version | cut -d' ' -f2))…"
+# Install BitNet runtime dependencies directly.
+# BitNet's requirements.txt (and its sub-files) pin torch~=2.2.1 which has
+# no wheel for Python 3.11+. We skip those files entirely and install only
+# what setup_env.py actually needs, with unpinned/compatible versions.
+info "Installing BitNet runtime dependencies (skipping pinned requirements files)…"
+pip install \
+    numpy \
+    sentencepiece \
+    transformers \
+    gguf \
+    protobuf \
+    huggingface_hub \
+    --quiet 2>/dev/null || \
+pip install \
+    numpy \
+    sentencepiece \
+    transformers \
+    gguf \
+    protobuf \
+    huggingface_hub
+
+info "Installing PyTorch CPU (latest build compatible with Python 3.13)…"
 pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
     pip install torch --index-url https://download.pytorch.org/whl/cpu
-success "BitNet requirements installed."
+success "BitNet dependencies installed."
 
 # ── Step 5: Setup BitNet (build + model download) ────────────────────────────
 info "Step 5/6: Running BitNet setup_env.py…"
