@@ -26,10 +26,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 BITNET_REPO="https://github.com/microsoft/BitNet.git"
 BITNET_DIR="${SCRIPT_DIR}/bitnet_cpp_src"
-# microsoft/BitNet-b1.58-2B-4T is in setup_env.py's supported list and is
-# the same 2B-4T architecture as the heretic fine-tune.
-MODEL_HF_REPO="microsoft/BitNet-b1.58-2B-4T"
-MODEL_DIR="${SCRIPT_DIR}/models/BitNet-b1.58-2B-4T"
+# We build bitnet.cpp using the official Microsoft model (in setup_env.py's
+# allowlist) to generate the correct kernel headers, then convert and quantize
+# the heretic fine-tune so the bot uses it for inference.
+BUILD_MODEL_REPO="microsoft/BitNet-b1.58-2B-4T"
+BUILD_MODEL_DIR="${SCRIPT_DIR}/models/BitNet-b1.58-2B-4T"
+HERETIC_REPO="askalgore/bitnet-b1.58-2B-4T-heretic"
+HERETIC_DIR="${SCRIPT_DIR}/models/heretic"
 PYTHON_MIN_VERSION="3.11"
 
 # ── Architecture check ────────────────────────────────────────────────────────
@@ -147,35 +150,90 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/de
     pip install torch --index-url https://download.pytorch.org/whl/cpu
 success "BitNet dependencies installed."
 
-# ── Step 5: Build BitNet + download model via setup_env.py ────────────────────
-info "Step 5/6: Running BitNet setup_env.py…"
-info "This downloads the model (~2 GB), generates kernel headers, and compiles."
-info "Expect 20-40 minutes on Raspberry Pi — please be patient."
+# ── Step 5: Build bitnet.cpp, then quantize the heretic model ─────────────────
+info "Step 5/6: Building bitnet.cpp and setting up the heretic model…"
+info "Expect 20-40 minutes total on Raspberry Pi — please be patient."
 echo ""
 
-mkdir -p "${MODEL_DIR}"
-GGUF_FILE="${MODEL_DIR}/ggml-model-i2_s.gguf"
+HERETIC_GGUF="${HERETIC_DIR}/ggml-model-i2_s.gguf"
+LLAMA_QUANTIZE="${BITNET_DIR}/build/bin/llama-quantize"
+CONVERT_SCRIPT="${BITNET_DIR}/3rdparty/llama.cpp/convert_hf_to_gguf.py"
 
+# ── 5a: Build bitnet.cpp using the official Microsoft model ───────────────────
+# setup_env.py only supports a hardcoded repo list; we use the Microsoft base
+# model to generate the kernel headers and compile the binary. The resulting
+# binary works for any model with the same 2B-4T architecture (including heretic).
+mkdir -p "${BUILD_MODEL_DIR}"
 cd "${BITNET_DIR}"
 
-if [[ -f "${GGUF_FILE}" ]] && [[ -f "${BITNET_DIR}/build/bin/llama-cli" ]]; then
-    info "GGUF model and compiled binary already present — skipping."
+if [[ -f "${LLAMA_QUANTIZE}" ]]; then
+    info "BitNet binary already compiled — skipping build step."
 else
-    info "Running: python setup_env.py --hf-repo ${MODEL_HF_REPO} -q i2_s"
+    info "Phase 1/3: Building bitnet.cpp via setup_env.py (using ${BUILD_MODEL_REPO})…"
+    info "(This downloads ~2 GB and compiles — takes 15-30 min)"
     "${VENV_DIR}/bin/python" setup_env.py \
-        --hf-repo "${MODEL_HF_REPO}" \
-        --model-dir "${MODEL_DIR}" \
+        --hf-repo "${BUILD_MODEL_REPO}" \
+        --model-dir "${BUILD_MODEL_DIR}" \
         -q i2_s
-    success "BitNet build complete."
+    success "BitNet binary compiled."
 fi
 
 cd "${SCRIPT_DIR}"
 
-if [[ ! -f "${GGUF_FILE}" ]]; then
-    warn "Expected GGUF not found at: ${GGUF_FILE}"
-    warn "Check ${MODEL_DIR} for the actual .gguf filename and update config.yaml."
+# ── 5b: Download the heretic model ────────────────────────────────────────────
+mkdir -p "${HERETIC_DIR}"
+
+if [[ -f "${HERETIC_GGUF}" ]]; then
+    info "Heretic GGUF already present — skipping download and conversion."
 else
-    success "Model ready: ${GGUF_FILE}"
+    # Check if raw model files already downloaded (previous attempt)
+    if [[ ! -f "${HERETIC_DIR}/config.json" ]]; then
+        info "Phase 2/3: Downloading heretic model (${HERETIC_REPO})…"
+        info "(~2 GB — may take 10-20 min depending on your connection)"
+        "${VENV_DIR}/bin/python" - <<PYEOF
+import sys
+from huggingface_hub import snapshot_download
+print(f"Downloading ${HERETIC_REPO} ...", flush=True)
+try:
+    snapshot_download(repo_id="${HERETIC_REPO}", local_dir="${HERETIC_DIR}")
+    print("Download complete.", flush=True)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+        success "Heretic model downloaded."
+    else
+        info "Heretic model files already present — skipping download."
+    fi
+
+    # ── 5c: Convert heretic to GGUF and quantize to i2_s ─────────────────────
+    info "Phase 3/3: Converting heretic model to GGUF and quantizing to i2_s…"
+    info "(This may take 10-20 min on Raspberry Pi)"
+
+    HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
+
+    if [[ ! -f "${HERETIC_F16}" ]]; then
+        info "Converting to F16 GGUF…"
+        "${VENV_DIR}/bin/python" "${CONVERT_SCRIPT}" \
+            "${HERETIC_DIR}" \
+            --outfile "${HERETIC_F16}" \
+            --outtype f16
+        success "F16 GGUF created."
+    fi
+
+    info "Quantizing to i2_s…"
+    "${LLAMA_QUANTIZE}" "${HERETIC_F16}" "${HERETIC_GGUF}" i2_s
+    success "Heretic model quantized."
+
+    info "Removing intermediate F16 file to save disk space…"
+    rm -f "${HERETIC_F16}"
+fi
+
+if [[ ! -f "${HERETIC_GGUF}" ]]; then
+    warn "Heretic GGUF not found at: ${HERETIC_GGUF}"
+    warn "Check ${HERETIC_DIR} and update config.yaml if the filename differs."
+else
+    success "Heretic model ready: ${HERETIC_GGUF}"
 fi
 
 # ── Step 6: Project directories + token reminder ──────────────────────────────
