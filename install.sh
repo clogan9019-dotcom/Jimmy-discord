@@ -258,6 +258,11 @@ PYEOF
 
     HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
 
+    if [[ -f "${HERETIC_F16}" && ! -f "${HERETIC_GGUF}" ]]; then
+        warn "Found an intermediate F16 GGUF without the final i2_s model — removing it to avoid reusing a partial failed conversion."
+        rm -f "${HERETIC_F16}"
+    fi
+
     if [[ ! -f "${HERETIC_F16}" ]]; then
         # The heretic model uses a LLaMA-3 tiktoken tokenizer (tokenizer.json only,
         # no tokenizer.model). LLaMA-3 uses BPE (tiktoken), so patch the converter
@@ -269,6 +274,105 @@ PYEOF
 
         info "Patching heretic config.json architecture name (BitNetForCausalLM → BitnetForCausalLM)…"
         sed -i 's/BitNetForCausalLM/BitnetForCausalLM/g' "${HERETIC_DIR}/config.json"
+
+        info "Patching BitNet converter to handle offline BitNet weight_scale tensors…"
+        "${VENV_PYTHON}" - "${CONVERT_SCRIPT}" <<'PYEOF'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+# Microsoft BitNet's converter currently maps regular weight/bias tensors, but
+# offline AutoBitLinear checkpoints also contain sibling `.weight_scale` tensors.
+# The heretic checkpoint stores unpacked ternary BF16 weights plus those scales;
+# upstream BitNet checkpoints may store packed U8 weights plus those scales. GGUF
+# has no separate mapping for `.weight_scale`, so consume the scales here and
+# skip the scale tensors during conversion. The patch is idempotent.
+if "self._bitnet_skip_weight_quant" not in text:
+    old_modify = '''    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # quant weight to i2 (in fp16)
+        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", 
+                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
+                          "o_proj.weight")):
+            data_torch = self.weight_quant(data_torch)
+
+        return [(self.map_tensor_name(name), data_torch)]
+'''
+    new_modify = '''    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Some BitNet/AutoBitLinear checkpoints store pre-quantized ternary
+        # weights plus a sibling .weight_scale tensor. write_tensors() consumes
+        # those scales before tensors get here, so do not re-quantize them.
+        if name in getattr(self, "_bitnet_skip_weight_quant", set()):
+            return [(self.map_tensor_name(name), data_torch)]
+
+        # quant weight to i2 (in fp16)
+        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", 
+                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
+                          "o_proj.weight")):
+            data_torch = self.weight_quant(data_torch)
+
+        return [(self.map_tensor_name(name), data_torch)]
+'''
+    if old_modify not in text:
+        raise SystemExit("Could not patch BitNet converter modify_tensors block; upstream changed.")
+    text = text.replace(old_modify, new_modify, 1)
+
+    old_write = '''    def write_tensors(self):
+        max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
+
+        for name, data_torch in self.get_tensors():
+            # we don't need these
+            if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
+                continue
+
+            old_dtype = data_torch.dtype
+
+            # convert any unsupported data types to float32
+'''
+    new_write = '''    def write_tensors(self):
+        max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
+
+        scale_map = {}
+        for name, data_torch in self.get_tensors():
+            if name.endswith("weight_scale"):
+                scale_map[name.replace(".weight_scale", "")] = data_torch.to(torch.float32)
+        self._bitnet_skip_weight_quant = set()
+
+        for name, data_torch in self.get_tensors():
+            if name.endswith("weight_scale"):
+                continue
+
+            # Offline BitNet/AutoBitLinear checkpoints store a ternary weight
+            # tensor plus a sibling scalar .weight_scale. GGUF expects the
+            # de-scaled float weights and has no tensor mapping for weight_scale.
+            if name.endswith(".weight"):
+                scale = scale_map.get(name[:-len(".weight")])
+                if scale is not None:
+                    if data_torch.dtype == torch.uint8:
+                        origin_shape = data_torch.shape
+                        shift = torch.tensor([0, 2, 4, 6], dtype=torch.uint8).reshape((4, *(1 for _ in range(len(origin_shape)))))
+                        data_torch = data_torch.unsqueeze(0).expand((4, *origin_shape)) >> shift
+                        data_torch = data_torch & 3
+                        data_torch = (data_torch.float() - 1).reshape((origin_shape[0] * 4, *origin_shape[1:]))
+                    else:
+                        data_torch = data_torch.to(torch.float32)
+                    data_torch = data_torch / scale.float()
+                    self._bitnet_skip_weight_quant.add(name)
+
+            # we don't need these
+            if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
+                continue
+
+            old_dtype = data_torch.dtype
+
+            # convert any unsupported data types to float32
+'''
+    if old_write not in text:
+        raise SystemExit("Could not patch BitNet converter write_tensors block; upstream changed.")
+    text = text.replace(old_write, new_write, 1)
+    path.write_text(text)
+PYEOF
         info "Converting to F16 GGUF…"
         "${VENV_PYTHON}" "${CONVERT_SCRIPT}" \
             "${HERETIC_DIR}" \
