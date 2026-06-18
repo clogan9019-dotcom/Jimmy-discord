@@ -711,7 +711,15 @@ Write-Ok "BitNet source ready."
 
 # -- Step 4: Build quantizer ---------------------------------------------------
 Write-Info "Step 4/6: Building BitNet quantizer..."
-$Quantizer = Build-BitNetQuantizer
+$Quantizer = $null
+try {
+    $Quantizer = Build-BitNetQuantizer
+}
+catch {
+    Write-Warn "Native Windows quantizer build failed: $($_.Exception.Message)"
+    Write-Warn "Continuing in conversion-only mode. This will create model-f16.gguf on Windows."
+    Write-Warn "Transfer model-f16.gguf to the Pi, and the Pi installer will do the final i2_s quantization with its already-built ARM64 quantizer."
+}
 
 # -- Step 5: Download Heretic model --------------------------------------------
 Write-Info "Step 5/6: Downloading/checking Heretic model files..."
@@ -733,62 +741,96 @@ else {
 }
 Write-Ok "Heretic model files ready."
 
-# -- Step 6: Convert + quantize ------------------------------------------------
-Write-Info "Step 6/6: Converting Heretic model to GGUF and quantizing to i2_s..."
+# -- Step 6: Convert + optional quantize ---------------------------------------
+if ($Quantizer) {
+    Write-Info "Step 6/6: Converting Heretic model to GGUF and quantizing to i2_s..."
+}
+else {
+    Write-Info "Step 6/6: Converting Heretic model to F16 GGUF for transfer to the Pi..."
+}
+
+$OutputFile = $null
+$RemoteFileName = $null
+$OutputKind = $null
 
 if (Test-Path $HereticGGUF) {
-    Write-Ok "Final GGUF already exists: $HereticGGUF"
+    Write-Ok "Final i2_s GGUF already exists: $HereticGGUF"
+    $OutputFile = $HereticGGUF
+    $RemoteFileName = "ggml-model-i2_s.gguf"
+    $OutputKind = "final i2_s GGUF"
 }
 else {
     if (Test-Path $HereticF16) {
-        Write-Warn "Removing old intermediate F16 GGUF so a failed previous conversion is not reused."
-        Remove-Item -Force $HereticF16
+        Write-Info "F16 GGUF already exists: $HereticF16"
+        Write-Info "Using existing F16 file. If it came from a failed/partial conversion, delete it and rerun."
+    }
+    else {
+        Patch-BitNetConverter
+
+        $configPath = Join-Path $HereticDir "config.json"
+        Write-Info "Patching Heretic config architecture name..."
+        $configText = Get-Content -Raw -Path $configPath
+        $configText = $configText -replace 'BitNetForCausalLM', 'BitnetForCausalLM'
+        Set-FileUtf8NoBom -Path $configPath -Text $configText
+
+        Write-Info "Converting to F16 GGUF. This is the high-RAM step..."
+        Invoke-Checked $VenvPython @($ConvertScript, $HereticDir, "--outfile", $HereticF16, "--outtype", "f16")
+
+        if (-not (Test-Path $HereticF16)) {
+            Die "F16 GGUF conversion did not produce $HereticF16"
+        }
+
+        Write-Ok "F16 GGUF created: $HereticF16"
     }
 
-    Patch-BitNetConverter
+    if ($Quantizer) {
+        Write-Info "Quantizing to i2_s..."
+        Invoke-Checked $Quantizer @($HereticF16, $HereticGGUF, "I2_S")
 
-    $configPath = Join-Path $HereticDir "config.json"
-    Write-Info "Patching Heretic config architecture name..."
-    $configText = Get-Content -Raw -Path $configPath
-    $configText = $configText -replace 'BitNetForCausalLM', 'BitnetForCausalLM'
-    Set-FileUtf8NoBom -Path $configPath -Text $configText
+        if (-not (Test-Path $HereticGGUF)) {
+            Die "Quantization did not produce $HereticGGUF"
+        }
 
-    Write-Info "Converting to F16 GGUF. This is the high-RAM step..."
-    Invoke-Checked $VenvPython @($ConvertScript, $HereticDir, "--outfile", $HereticF16, "--outtype", "f16")
+        if (-not $KeepF16) {
+            Write-Info "Removing intermediate F16 GGUF to save disk space..."
+            Remove-Item -Force $HereticF16
+        }
 
-    if (-not (Test-Path $HereticF16)) {
-        Die "F16 GGUF conversion did not produce $HereticF16"
+        Write-Ok "Final i2_s GGUF created: $HereticGGUF"
+        $OutputFile = $HereticGGUF
+        $RemoteFileName = "ggml-model-i2_s.gguf"
+        $OutputKind = "final i2_s GGUF"
     }
-
-    Write-Info "Quantizing to i2_s..."
-    Invoke-Checked $Quantizer @($HereticF16, $HereticGGUF, "I2_S")
-
-    if (-not (Test-Path $HereticGGUF)) {
-        Die "Quantization did not produce $HereticGGUF"
+    else {
+        Write-Ok "Conversion-only output ready: $HereticF16"
+        Write-Warn "This is an F16 intermediate. It is larger than the final i2_s file, but it avoids the RAM-heavy HF conversion on the Pi."
+        Write-Warn "After transfer, the Pi installer will quantize this F16 GGUF to ggml-model-i2_s.gguf."
+        $OutputFile = $HereticF16
+        $RemoteFileName = "model-f16.gguf"
+        $OutputKind = "F16 intermediate GGUF"
     }
-
-    if (-not $KeepF16) {
-        Write-Info "Removing intermediate F16 GGUF to save disk space..."
-        Remove-Item -Force $HereticF16
-    }
-
-    Write-Ok "Final GGUF created: $HereticGGUF"
 }
 
-$size = (Get-Item $HereticGGUF).Length / 1GB
+$size = (Get-Item $OutputFile).Length / 1GB
+$RemotePath = "~/Jimmy-2/Jimmy-discord/models/heretic/$RemoteFileName"
 Write-Host ""
 Write-Host "===========================================================" -ForegroundColor Green
 Write-Host " Windows GGUF build complete" -ForegroundColor Green
-Write-Host " File: $HereticGGUF" -ForegroundColor Green
+Write-Host " Type: $OutputKind" -ForegroundColor Green
+Write-Host " File: $OutputFile" -ForegroundColor Green
 Write-Host (" Size: {0:N2} GB" -f $size) -ForegroundColor Green
 Write-Host "===========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Copy it to your Raspberry Pi with something like:" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "scp `"$HereticGGUF`" clogan@YOUR_PI_IP:~/Jimmy-2/Jimmy-discord/models/heretic/ggml-model-i2_s.gguf" -ForegroundColor White
+Write-Host "scp `"$OutputFile`" clogan@YOUR_PI_IP:$RemotePath" -ForegroundColor White
 Write-Host ""
 Write-Host "Then on the Pi:" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "cd ~/Jimmy-2/Jimmy-discord" -ForegroundColor White
 Write-Host "git pull --ff-only && bash install.sh" -ForegroundColor White
+if ($RemoteFileName -eq "model-f16.gguf") {
+    Write-Host ""
+    Write-Warn "Because you are transferring model-f16.gguf, make sure the Pi has the latest install.sh. The latest installer will keep model-f16.gguf and quantize it instead of deleting it."
+}
 Write-Host ""
