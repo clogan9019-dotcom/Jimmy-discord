@@ -308,6 +308,56 @@ if grep -q 'token: ""' "${SCRIPT_DIR}/config.yaml" 2>/dev/null; then
     echo "╚══════════════════════════════════════════════════════╝"
 fi
 
+
+# ── Step 7: Install systemd service (optional) ────────────────────────────────
+info "Step 7/7: Setting up systemd service…"
+SERVICE_NAME="jimmy-discord"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+CURRENT_USER="$(whoami)"
+
+# Write a populated service file into the repo for reference
+cat > "${SCRIPT_DIR}/jimmy-discord.service" <<SERVICE
+[Unit]
+Description=Jimmy Discord BitNet AI Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${CURRENT_USER}
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${SCRIPT_DIR}/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jimmy-discord
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+success "Service file written to ${SCRIPT_DIR}/jimmy-discord.service"
+
+echo ""
+read -r -p "$(echo -e "${BLUE}[INFO]${NC}  Install and enable the systemd service now? [y/N] ")" INSTALL_SERVICE
+if [[ "${INSTALL_SERVICE,,}" == "y" ]]; then
+    sudo cp "${SCRIPT_DIR}/jimmy-discord.service" "${SERVICE_FILE}"
+    sudo systemctl daemon-reload
+    sudo systemctl enable "${SERVICE_NAME}"
+    sudo systemctl start  "${SERVICE_NAME}"
+    success "Service installed and started."
+    info  "Useful commands:"
+    info  "  sudo systemctl status ${SERVICE_NAME}"
+    info  "  sudo journalctl -u ${SERVICE_NAME} -f"
+    info  "  sudo systemctl restart ${SERVICE_NAME}"
+else
+    info "Skipped. To install manually later:"
+    info "  sudo cp ${SCRIPT_DIR}/jimmy-discord.service ${SERVICE_FILE}"
+    info "  sudo systemctl daemon-reload"
+    info "  sudo systemctl enable --now ${SERVICE_NAME}"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
