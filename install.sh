@@ -112,11 +112,12 @@ success "Python dependencies installed."
 info "Step 4/7: Cloning and building bitnet.cpp…"
 
 if [[ ! -d "${BITNET_DIR}" ]]; then
-    info "Cloning BitNet repository…"
-    git clone --depth=1 "${BITNET_REPO}" "${BITNET_DIR}"
+    info "Cloning BitNet repository with submodules (llama.cpp)…"
+    git clone --recurse-submodules "${BITNET_REPO}" "${BITNET_DIR}"
 else
-    info "BitNet repository already cloned — pulling latest changes…"
+    info "BitNet repository already cloned — updating submodules…"
     git -C "${BITNET_DIR}" pull --ff-only 2>/dev/null || true
+    git -C "${BITNET_DIR}" submodule update --init --recursive
 fi
 
 BUILD_DIR="${BITNET_DIR}/build"
