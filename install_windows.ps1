@@ -484,9 +484,10 @@ function Invoke-WslScript {
     Set-FileUtf8NoBom -Path $tmp -Text ($ScriptText -replace "`r`n", "`n")
     try {
         $tmpWsl = ConvertTo-WslPath $tmp
-        & wsl.exe -e bash $tmpWsl
-        if ($LASTEXITCODE -ne 0) {
-            throw "WSL command failed with exit code ${LASTEXITCODE}."
+        & wsl.exe -e bash $tmpWsl 2>&1 | ForEach-Object { Write-Host $_ }
+        $wslExitCode = $LASTEXITCODE
+        if ($wslExitCode -ne 0) {
+            throw "WSL command failed with exit code ${wslExitCode}."
         }
     }
     finally {
@@ -562,12 +563,17 @@ else
 fi
 
 cd "$BITNET"
+echo "[INFO] WSL generating BitNet x86_64 kernel files..."
 python3 utils/codegen_tl2.py --model bitnet_b1_58-3B --BM 160,320,320 --BK 96,96,96 --bm 32,32,32
 
 if [ ! -x build/bin/llama-quantize ]; then
     rm -rf build
+    echo "[INFO] WSL configuring BitNet build..."
     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBITNET_X86_TL2=OFF -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+    echo "[INFO] WSL compiling BitNet quantizer..."
     cmake --build build
+else
+    echo "[INFO] WSL BitNet quantizer already built."
 fi
 
 Q="$BITNET/build/bin/llama-quantize"
@@ -1036,7 +1042,8 @@ else {
         $OutputKind = "final i2_s GGUF"
     }
     else {
-        $wslQuantized = Try-WslQuantizeF16 -F16Path $HereticF16 -OutputPath $HereticGGUF
+        $wslResult = Try-WslQuantizeF16 -F16Path $HereticF16 -OutputPath $HereticGGUF
+        $wslQuantized = (($wslResult -contains $true) -and (Test-Path $HereticGGUF) -and ((Get-Item $HereticGGUF).Length -ge 100MB))
         if ($wslQuantized) {
             if (-not $KeepF16) {
                 Write-Info "Removing intermediate F16 GGUF to save disk space..."
@@ -1047,6 +1054,10 @@ else {
             $OutputKind = "final i2_s GGUF produced by WSL"
         }
         else {
+            Write-Warn "WSL quantization did not produce a valid final GGUF, so keeping the F16 intermediate."
+            if (-not (Test-Path $HereticF16)) {
+                Die "F16 intermediate is missing, so there is no model file to transfer. Rerun install_windows.bat to recreate model-f16.gguf."
+            }
             Write-Ok "Conversion-only output ready: $HereticF16"
             Write-Warn "This is an F16 intermediate. It is larger than the final i2_s file, but it avoids the RAM-heavy HF conversion on the Pi."
             Write-Warn "After transfer, the Pi installer will quantize this F16 GGUF to ggml-model-i2_s.gguf."
