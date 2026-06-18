@@ -42,6 +42,18 @@ if [[ "${ARCH}" != "aarch64" ]]; then
     warn "The bot may still work, but is optimised for Raspberry Pi 4 (ARM64)."
 fi
 
+# ── Space-in-path check ───────────────────────────────────────────────────────
+# huggingface-cli (called internally by setup_env.py) can fail when the
+# working directory path contains spaces. Warn and offer a workaround.
+if [[ "${SCRIPT_DIR}" == *" "* ]]; then
+    warn "Your install path contains a space:"
+    warn "  ${SCRIPT_DIR}"
+    warn "This can cause huggingface-cli to fail inside setup_env.py."
+    warn "To avoid issues, move the project to a path without spaces, e.g.:"
+    warn "  mv \"${SCRIPT_DIR}\" \"\${HOME}/Jimmy-discord\""
+    warn "Continuing anyway — using Python snapshot_download as a workaround."
+fi
+
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ "${EUID}" -eq 0 ]]; then
     die "Do not run this script as root. Run as a regular user with sudo access."
@@ -105,7 +117,7 @@ fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-pip install --upgrade pip setuptools wheel --quiet
+pip install --upgrade pip "setuptools<82" wheel --quiet
 info "Installing bot Python dependencies…"
 pip install -r "${SCRIPT_DIR}/requirements.txt" --quiet
 pip install huggingface_hub --quiet
@@ -169,8 +181,36 @@ cd "${BITNET_DIR}"
 if [[ -f "${LLAMA_QUANTIZE}" ]]; then
     info "BitNet binary already compiled — skipping build step."
 else
+    # Pre-download the Microsoft model using Python's snapshot_download.
+    # This bypasses setup_env.py's internal huggingface-cli call, which can
+    # fail when the install path contains spaces (e.g. "Jimmy 2/Jimmy-discord").
+    # setup_env.py appends the model name to --model-dir, so the effective
+    # download target is BUILD_MODEL_DIR/<model_name>.
+    BUILD_MODEL_NAME="$(basename "${BUILD_MODEL_REPO}")"
+    BUILD_MODEL_DOWNLOAD_DIR="${BUILD_MODEL_DIR}/${BUILD_MODEL_NAME}"
+    mkdir -p "${BUILD_MODEL_DOWNLOAD_DIR}"
+
+    if [[ ! -f "${BUILD_MODEL_DOWNLOAD_DIR}/config.json" ]]; then
+        info "Phase 1/3: Downloading ${BUILD_MODEL_REPO} model…"
+        info "(~2 GB — may take 10-20 min depending on your connection)"
+        "${VENV_DIR}/bin/python" - <<PYEOF
+import sys
+from huggingface_hub import snapshot_download
+print("Downloading ${BUILD_MODEL_REPO} ...", flush=True)
+try:
+    snapshot_download(repo_id="${BUILD_MODEL_REPO}", local_dir="${BUILD_MODEL_DOWNLOAD_DIR}")
+    print("Download complete.", flush=True)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+        success "Microsoft model downloaded."
+    else
+        info "Microsoft model already present — skipping download."
+    fi
+
     info "Phase 1/3: Building bitnet.cpp via setup_env.py (using ${BUILD_MODEL_REPO})…"
-    info "(This downloads ~2 GB and compiles — takes 15-30 min)"
+    info "(Compiling only — model already downloaded — takes 15-30 min)"
     "${VENV_DIR}/bin/python" setup_env.py \
         --hf-repo "${BUILD_MODEL_REPO}" \
         --model-dir "${BUILD_MODEL_DIR}" \
