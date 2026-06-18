@@ -190,7 +190,10 @@ function Test-ClangCLToolset {
     $msbuildRoot = Join-Path $installPath "MSBuild\Microsoft\VC"
     if (Test-Path $msbuildRoot) {
         $found = Get-ChildItem -Path $msbuildRoot -Filter "Toolset.props" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\PlatformToolsets\(ClangCL|LLVM)\' } |
+            Where-Object {
+                $_.FullName.Contains("\PlatformToolsets\ClangCL\") -or
+                $_.FullName.Contains("\PlatformToolsets\LLVM\")
+            } |
             Select-Object -First 1
         if ($found) { $hasToolset = $true }
     }
@@ -235,7 +238,7 @@ function Invoke-VSInstallerModify {
 
 function Ensure-VSBuildTools {
     if (-not (Test-VSBuildTools)) {
-        $override = "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --add Microsoft.VisualStudio.Component.VC.CMake.Project"
+        $override = "--quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --add Microsoft.VisualStudio.Component.VC.CMake.Project"
         Install-WingetPackage -PackageId "Microsoft.VisualStudio.2022.BuildTools" -DisplayName "Visual Studio 2022 C++ Build Tools" -Override $override
 
         if (-not (Test-VSBuildTools)) {
