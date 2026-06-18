@@ -30,7 +30,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# ── Console helpers ───────────────────────────────────────────────────────────
+# -- Console helpers -----------------------------------------------------------
 function Write-Info { param([string]$Message) Write-Host "[INFO]  $Message" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$Message) Write-Host "[OK]    $Message" -ForegroundColor Green }
 function Write-Warn { param([string]$Message) Write-Host "[WARN]  $Message" -ForegroundColor Yellow }
@@ -121,38 +121,117 @@ function Ensure-Command {
     Write-Ok "$DisplayName installed."
 }
 
-function Test-VSBuildTools {
+function Get-VSWherePath {
     $vswhereCandidates = @(
         "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
         "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
     )
 
     foreach ($vswhere in $vswhereCandidates) {
-        if (Test-Path $vswhere) {
-            $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($installPath)) {
-                return $true
-            }
-        }
+        if (Test-Path $vswhere) { return $vswhere }
     }
 
-    return $false
+    return $null
+}
+
+function Get-VSInstallPath {
+    $vswhere = Get-VSWherePath
+    if (-not $vswhere) { return $null }
+
+    $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($installPath)) {
+        return $installPath.Trim()
+    }
+
+    return $null
+}
+
+function Test-VSBuildTools {
+    return -not [string]::IsNullOrWhiteSpace((Get-VSInstallPath))
+}
+
+function Test-ClangCLToolset {
+    $installPath = Get-VSInstallPath
+    if ([string]::IsNullOrWhiteSpace($installPath)) { return $false }
+
+    $clangExeCandidates = @(
+        (Join-Path $installPath "VC\Tools\Llvm\x64\bin\clang-cl.exe"),
+        (Join-Path $installPath "VC\Tools\Llvm\bin\clang-cl.exe")
+    )
+    $hasClangExe = $false
+    foreach ($candidate in $clangExeCandidates) {
+        if (Test-Path $candidate) { $hasClangExe = $true; break }
+    }
+
+    $toolsetCandidates = @(
+        (Join-Path $installPath "MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\ClangCL\Toolset.props"),
+        (Join-Path $installPath "MSBuild\Microsoft\VC\v170\Platforms\Win32\PlatformToolsets\ClangCL\Toolset.props")
+    )
+    $hasToolset = $false
+    foreach ($candidate in $toolsetCandidates) {
+        if (Test-Path $candidate) { $hasToolset = $true; break }
+    }
+
+    return ($hasClangExe -and $hasToolset)
+}
+
+function Invoke-VSInstallerModify {
+    param([Parameter(Mandatory = $true)][string]$InstallPath)
+
+    if ($SkipPrereqInstall) {
+        throw "Visual Studio ClangCL components are missing. Re-run without -SkipPrereqInstall or install them manually."
+    }
+
+    $installerCandidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe",
+        "$env:ProgramFiles\Microsoft Visual Studio\Installer\vs_installer.exe"
+    )
+
+    $installer = $null
+    foreach ($candidate in $installerCandidates) {
+        if (Test-Path $candidate) { $installer = $candidate; break }
+    }
+
+    if (-not $installer) {
+        throw "Visual Studio Installer was not found. Open Visual Studio Installer manually and add 'C++ Clang Compiler for Windows' plus 'MSBuild support for LLVM (clang-cl) toolset'."
+    }
+
+    Write-Warn "Visual Studio is missing the ClangCL toolset required by BitNet. Installing the missing VS components..."
+    Write-Warn "If Windows asks for admin permission, approve it. You may need to re-run this script afterward."
+
+    $args = @(
+        "modify",
+        "--installPath", $InstallPath,
+        "--quiet", "--wait", "--norestart",
+        "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang",
+        "--add", "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+    )
+
+    Invoke-Checked $installer $args
 }
 
 function Ensure-VSBuildTools {
-    if (Test-VSBuildTools) {
-        Write-Ok "Visual Studio C++ Build Tools found."
-        return
-    }
-
-    $override = "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.CMake.Project"
-    Install-WingetPackage -PackageId "Microsoft.VisualStudio.2022.BuildTools" -DisplayName "Visual Studio 2022 C++ Build Tools" -Override $override
-
     if (-not (Test-VSBuildTools)) {
-        throw "Visual Studio Build Tools did not appear to install correctly. Reboot or open a new PowerShell window, then re-run this script."
+        $override = "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset --add Microsoft.VisualStudio.Component.VC.CMake.Project"
+        Install-WingetPackage -PackageId "Microsoft.VisualStudio.2022.BuildTools" -DisplayName "Visual Studio 2022 C++ Build Tools" -Override $override
+
+        if (-not (Test-VSBuildTools)) {
+            throw "Visual Studio Build Tools did not appear to install correctly. Reboot or open a new PowerShell window, then re-run this script."
+        }
     }
 
-    Write-Ok "Visual Studio C++ Build Tools installed."
+    Write-Ok "Visual Studio C++ Build Tools found."
+
+    if (-not (Test-ClangCLToolset)) {
+        $installPath = Get-VSInstallPath
+        Invoke-VSInstallerModify -InstallPath $installPath
+    }
+
+    if (-not (Test-ClangCLToolset)) {
+        throw "ClangCL is still missing. Open Visual Studio Installer -> Modify -> Individual components, then install: C++ Clang Compiler for Windows, and MSBuild support for LLVM (clang-cl) toolset. Then re-run this script."
+    }
+
+    Write-Ok "Visual Studio ClangCL toolset found."
 }
 
 function Test-PythonCandidate {
@@ -247,8 +326,10 @@ function Build-BitNetQuantizer {
     Write-Info "Configuring BitNet build with CMake / Visual Studio / ClangCL..."
     $configured = $false
     $cmakeAttempts = @(
+        @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-T", "ClangCL,host=x64", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
         @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-T", "ClangCL", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
-        @("-B", "build", "-T", "ClangCL", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++")
+        @("-B", "build", "-T", "ClangCL", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
+        @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-DBITNET_X86_TL2=OFF")
     )
 
     foreach ($args in $cmakeAttempts) {
@@ -264,7 +345,7 @@ function Build-BitNetQuantizer {
     }
 
     if (-not $configured) {
-        Die "CMake configuration failed. Try running this from 'Developer PowerShell for VS 2022' or install Visual Studio 2022 C++ Build Tools with the C++ workload."
+        Die "CMake configuration failed. Open Visual Studio Installer -> Modify -> Individual components and install 'C++ Clang Compiler for Windows' plus 'MSBuild support for LLVM (clang-cl) toolset', then rerun install_windows.bat."
     }
 
     Write-Info "Compiling BitNet quantizer. This can take a while..."
@@ -302,7 +383,8 @@ text = path.read_text(encoding="utf-8")
 if "self._bitnet_skip_weight_quant" not in text:
     old_modify = '''    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # quant weight to i2 (in fp16)
-        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", \n                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
+        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", 
+                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
                           "o_proj.weight")):
             data_torch = self.weight_quant(data_torch)
 
@@ -316,7 +398,8 @@ if "self._bitnet_skip_weight_quant" not in text:
             return [(self.map_tensor_name(name), data_torch)]
 
         # quant weight to i2 (in fp16)
-        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", \n                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
+        if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight", 
+                          "down_proj.weight", "up_proj.weight", "gate_proj.weight",
                           "o_proj.weight")):
             data_torch = self.weight_quant(data_torch)
 
@@ -388,7 +471,7 @@ if "self._bitnet_skip_weight_quant" not in text:
     Write-Ok "BitNet converter patched."
 }
 
-# ── Paths/config ──────────────────────────────────────────────────────────────
+# -- Paths/config --------------------------------------------------------------
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ScriptDir)) { $ScriptDir = (Get-Location).Path }
 
@@ -404,10 +487,10 @@ $HereticDir = Join-Path $ScriptDir "models\heretic"
 $HereticF16 = Join-Path $HereticDir "model-f16.gguf"
 $HereticGGUF = Join-Path $HereticDir "ggml-model-i2_s.gguf"
 
-# ── Banner ───────────────────────────────────────────────────────────────────
+# -- Banner -------------------------------------------------------------------
 Write-Host ""
 Write-Host "===========================================================" -ForegroundColor Cyan
-Write-Host " Discord BitNet Bot — Windows GGUF Builder" -ForegroundColor Cyan
+Write-Host " Discord BitNet Bot - Windows GGUF Builder" -ForegroundColor Cyan
 Write-Host " Output: models\heretic\ggml-model-i2_s.gguf" -ForegroundColor Cyan
 Write-Host "===========================================================" -ForegroundColor Cyan
 Write-Host ""
@@ -420,7 +503,7 @@ if ($ScriptDir -match '\s') {
     Write-Warn "The script tries to quote paths correctly, but a no-space path like C:\Jimmy-discord is safer."
 }
 
-# ── Step 1: Windows prerequisites ─────────────────────────────────────────────
+# -- Step 1: Windows prerequisites ---------------------------------------------
 Write-Info "Step 1/6: Checking Windows prerequisites..."
 Ensure-Command -CommandName "git" -PackageId "Git.Git" -DisplayName "Git"
 Ensure-Command -CommandName "cmake" -PackageId "Kitware.CMake" -DisplayName "CMake"
@@ -437,7 +520,7 @@ if ($null -eq $script:BasePython) {
 }
 Write-Ok "Using Python $($script:BasePython.Version): $($script:BasePython.Path)"
 
-# ── Step 2: Python virtual environment ────────────────────────────────────────
+# -- Step 2: Python virtual environment ----------------------------------------
 Write-Info "Step 2/6: Creating/updating Python virtual environment..."
 if ((Test-Path $VenvDir) -and -not (Test-Path $VenvPython)) {
     Write-Warn "Existing .venv-win is broken; recreating it."
@@ -452,7 +535,7 @@ Invoke-Checked $VenvPython @("-m", "pip", "install", "numpy", "sentencepiece", "
 Invoke-Checked $VenvPython @("-m", "pip", "install", "torch", "--index-url", "https://download.pytorch.org/whl/cpu")
 Write-Ok "Python dependencies installed."
 
-# ── Step 3: Clone/update BitNet ───────────────────────────────────────────────
+# -- Step 3: Clone/update BitNet -----------------------------------------------
 Write-Info "Step 3/6: Cloning/updating Microsoft BitNet..."
 if (-not (Test-Path $BitnetDir)) {
     Invoke-Checked "git" @("clone", "--recurse-submodules", $BitnetRepo, $BitnetDir)
@@ -468,11 +551,11 @@ else {
 Invoke-Checked $VenvPython @("-m", "pip", "install", (Join-Path $BitnetDir "3rdparty\llama.cpp\gguf-py"))
 Write-Ok "BitNet source ready."
 
-# ── Step 4: Build quantizer ───────────────────────────────────────────────────
+# -- Step 4: Build quantizer ---------------------------------------------------
 Write-Info "Step 4/6: Building BitNet quantizer..."
 $Quantizer = Build-BitNetQuantizer
 
-# ── Step 5: Download Heretic model ────────────────────────────────────────────
+# -- Step 5: Download Heretic model --------------------------------------------
 Write-Info "Step 5/6: Downloading/checking Heretic model files..."
 New-Item -ItemType Directory -Force -Path $HereticDir | Out-Null
 if (-not (Test-Path (Join-Path $HereticDir "config.json"))) {
@@ -492,7 +575,7 @@ else {
 }
 Write-Ok "Heretic model files ready."
 
-# ── Step 6: Convert + quantize ────────────────────────────────────────────────
+# -- Step 6: Convert + quantize ------------------------------------------------
 Write-Info "Step 6/6: Converting Heretic model to GGUF and quantizing to i2_s..."
 
 if (Test-Path $HereticGGUF) {
