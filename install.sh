@@ -165,6 +165,8 @@ info "Installing BitNet runtime dependencies (skipping pinned requirements files
     protobuf \
     huggingface_hub
 
+info "Installing local gguf-py from BitNet submodule (has TL1/TL2 BitNet quant types)…"
+"${VENV_PIP}" install "${BITNET_DIR}/3rdparty/llama.cpp/gguf-py" --quiet 2>/dev/null ||     "${VENV_PIP}" install "${BITNET_DIR}/3rdparty/llama.cpp/gguf-py"
 info "Installing PyTorch CPU…"
 "${VENV_PIP}" install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/dev/null || \
     "${VENV_PIP}" install torch --index-url https://download.pytorch.org/whl/cpu
