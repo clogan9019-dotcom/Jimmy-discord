@@ -259,8 +259,14 @@ PYEOF
     HERETIC_F16="${HERETIC_DIR}/model-f16.gguf"
 
     if [[ -f "${HERETIC_F16}" && ! -f "${HERETIC_GGUF}" ]]; then
-        info "Found existing F16 GGUF intermediate — using it for i2_s quantization."
-        info "If this file is from a failed/partial conversion, delete it and rerun: rm -f \"${HERETIC_F16}\""
+        f16_size="$(stat -c%s "${HERETIC_F16}" 2>/dev/null || echo 0)"
+        if (( f16_size < 1073741824 )); then
+            warn "Existing F16 GGUF is smaller than 1 GB, so it is probably a partial failed conversion — removing it."
+            rm -f "${HERETIC_F16}"
+        else
+            info "Found existing F16 GGUF intermediate — using it for i2_s quantization."
+            info "If this file is from a failed/partial conversion, delete it and rerun: rm -f \"${HERETIC_F16}\""
+        fi
     fi
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
@@ -282,6 +288,19 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text()
+
+# Newer tokenizer/transformers combinations produce this checksum for the
+# heretic model, but it is still the LLaMA-3 BPE pre-tokenizer.
+if "f15ce481ca8fccf8c06fd3d936c1c7f79b64c61a92f6cf846fcf725ff98f4461" not in text:
+    text = text.replace(
+        "        res = None\n\n        # NOTE:",
+        "        res = None\n\n"
+        "        if chkhsh == \"f15ce481ca8fccf8c06fd3d936c1c7f79b64c61a92f6cf846fcf725ff98f4461\":\n"
+        "            # ref: askalgore/bitnet-b1.58-2B-4T-heretic (LLaMA-3 BPE)\n"
+        "            res = \"llama-bpe\"\n\n"
+        "        # NOTE:",
+        1,
+    )
 
 # Microsoft BitNet's converter currently maps regular weight/bias tensors, but
 # offline AutoBitLinear checkpoints also contain sibling `.weight_scale` tensors.
