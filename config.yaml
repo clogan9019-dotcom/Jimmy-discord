@@ -1,0 +1,32 @@
+discord:
+  # Your Discord bot token.
+  # Alternatively, set the DISCORD_TOKEN environment variable.
+  token: ""
+
+bitnet:
+  # Path to the compiled bitnet.cpp executable
+  executable: "./bitnet"
+  # Path to the model directory (bitnet-b1.58-2B-4T-heretic)
+  model: "./models/heretic"
+  # Number of CPU threads to use (Raspberry Pi 4 has 4 cores)
+  threads: 4
+  # Maximum context length in tokens
+  context: 4096
+  # Sampling temperature (0.0 = deterministic, 1.0 = very random)
+  temperature: 0.8
+  # Nucleus sampling probability threshold
+  top_p: 0.95
+  # Top-K candidates to consider at each token step
+  top_k: 40
+  # Penalty for repeating recent tokens (1.0 = no penalty)
+  repeat_penalty: 1.1
+  # Maximum tokens to generate per response
+  max_tokens: 512
+
+database:
+  # Path to the SQLite conversation memory database
+  file: "memory.db"
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
