@@ -532,6 +532,19 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 
+# Newer tokenizer/transformers combinations produce this checksum for the
+# heretic model, but it is still the LLaMA-3 BPE pre-tokenizer.
+if "f15ce481ca8fccf8c06fd3d936c1c7f79b64c61a92f6cf846fcf725ff98f4461" not in text:
+    text = text.replace(
+        "        res = None\n\n        # NOTE:",
+        "        res = None\n\n"
+        "        if chkhsh == \"f15ce481ca8fccf8c06fd3d936c1c7f79b64c61a92f6cf846fcf725ff98f4461\":\n"
+        "            # ref: askalgore/bitnet-b1.58-2B-4T-heretic (LLaMA-3 BPE)\n"
+        "            res = \"llama-bpe\"\n\n"
+        "        # NOTE:",
+        1,
+    )
+
 # Microsoft BitNet's converter currently maps regular weight/bias tensors, but
 # offline AutoBitLinear checkpoints also contain sibling `.weight_scale` tensors.
 # The heretic checkpoint stores unpacked ternary BF16 weights plus those scales;
@@ -760,6 +773,14 @@ if (Test-Path $HereticGGUF) {
     $OutputKind = "final i2_s GGUF"
 }
 else {
+    if (Test-Path $HereticF16) {
+        $f16SizeBytes = (Get-Item $HereticF16).Length
+        if ($f16SizeBytes -lt 1GB) {
+            Write-Warn "Existing F16 GGUF is smaller than 1 GB, so it is probably a partial failed conversion. Removing it."
+            Remove-Item -Force $HereticF16
+        }
+    }
+
     if (Test-Path $HereticF16) {
         Write-Info "F16 GGUF already exists: $HereticF16"
         Write-Info "Using existing F16 file. If it came from a failed/partial conversion, delete it and rerun."
