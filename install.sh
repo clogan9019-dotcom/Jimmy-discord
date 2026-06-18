@@ -26,8 +26,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 BITNET_REPO="https://github.com/microsoft/BitNet.git"
 BITNET_DIR="${SCRIPT_DIR}/bitnet_cpp_src"
-MODEL_HF_ID="askalgore/bitnet-b1.58-2B-4T-heretic"
-MODEL_DIR="${SCRIPT_DIR}/models/heretic"
+# microsoft/BitNet-b1.58-2B-4T is in setup_env.py's supported list and is
+# the same 2B-4T architecture as the heretic fine-tune.
+MODEL_HF_REPO="microsoft/BitNet-b1.58-2B-4T"
+MODEL_DIR="${SCRIPT_DIR}/models/BitNet-b1.58-2B-4T"
 PYTHON_MIN_VERSION="3.11"
 
 # ── Architecture check ────────────────────────────────────────────────────────
@@ -145,48 +147,23 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet 2>/de
     pip install torch --index-url https://download.pytorch.org/whl/cpu
 success "BitNet dependencies installed."
 
-# ── Step 5: Download model then run BitNet setup ──────────────────────────────
-info "Step 5/6: Setting up BitNet model and building project…"
-info "This will take 15-40 minutes on Raspberry Pi — please be patient."
+# ── Step 5: Build BitNet + download model via setup_env.py ────────────────────
+info "Step 5/6: Running BitNet setup_env.py…"
+info "This downloads the model (~2 GB), generates kernel headers, and compiles."
+info "Expect 20-40 minutes on Raspberry Pi — please be patient."
 echo ""
 
 mkdir -p "${MODEL_DIR}"
-
 GGUF_FILE="${MODEL_DIR}/ggml-model-i2_s.gguf"
 
-# ── 5a: Download model from Hugging Face ──────────────────────────────────────
-if [[ -d "${MODEL_DIR}" ]] && [[ "$(ls -A "${MODEL_DIR}" 2>/dev/null)" ]]; then
-    info "Model directory already has files — skipping download."
-else
-    info "Downloading model '${MODEL_HF_ID}' from Hugging Face…"
-    info "(This is ~1-2 GB and may take 10-20 minutes on your connection.)"
-    "${VENV_DIR}/bin/python" - <<PYEOF
-import sys
-from huggingface_hub import snapshot_download
-model_id = "${MODEL_HF_ID}"
-local_dir = "${MODEL_DIR}"
-print(f"Downloading {model_id} -> {local_dir}", flush=True)
-try:
-    snapshot_download(repo_id=model_id, local_dir=local_dir)
-    print("Download complete.", flush=True)
-except Exception as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    sys.exit(1)
-PYEOF
-    success "Model downloaded to ${MODEL_DIR}."
-fi
-
-# ── 5b: Run setup_env.py to generate kernel headers + build ───────────────────
-# setup_env.py must be run from inside bitnet_cpp_src.
-# It uses --model-dir when the model is already local; the --hf-repo flag
-# only accepts a hardcoded allowlist that does not include our model.
 cd "${BITNET_DIR}"
 
 if [[ -f "${GGUF_FILE}" ]] && [[ -f "${BITNET_DIR}/build/bin/llama-cli" ]]; then
-    info "GGUF model and compiled binary already present — skipping build."
+    info "GGUF model and compiled binary already present — skipping."
 else
-    info "Running setup_env.py (generates kernel headers + compiles with CMake)…"
+    info "Running: python setup_env.py --hf-repo ${MODEL_HF_REPO} -q i2_s"
     "${VENV_DIR}/bin/python" setup_env.py \
+        --hf-repo "${MODEL_HF_REPO}" \
         --model-dir "${MODEL_DIR}" \
         -q i2_s
     success "BitNet build complete."
@@ -195,7 +172,7 @@ fi
 cd "${SCRIPT_DIR}"
 
 if [[ ! -f "${GGUF_FILE}" ]]; then
-    warn "Expected GGUF file not found at: ${GGUF_FILE}"
+    warn "Expected GGUF not found at: ${GGUF_FILE}"
     warn "Check ${MODEL_DIR} for the actual .gguf filename and update config.yaml."
 else
     success "Model ready: ${GGUF_FILE}"
