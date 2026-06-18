@@ -545,6 +545,17 @@ if "f15ce481ca8fccf8c06fd3d936c1c7f79b64c61a92f6cf846fcf725ff98f4461" not in tex
         1,
     )
 
+# If the exact BPE pre-tokenizer checksum changes across tokenizer/transformers
+# versions, keep going for this known heretic LLaMA-3 tokenizer instead of
+# aborting. The converter only needs tokenizer.ggml.pre="llama-bpe" here.
+if "defaulting tokenizer.ggml.pre to llama-bpe for heretic model" not in text:
+    text = text.replace(
+        '            raise NotImplementedError("BPE pre-tokenizer was not recognized - update get_vocab_base_pre()")',
+        '            logger.warning("BPE pre-tokenizer was not recognized; defaulting tokenizer.ggml.pre to llama-bpe for heretic model")\n'
+        '            res = "llama-bpe"',
+        1,
+    )
+
 # Microsoft BitNet's converter currently maps regular weight/bias tensors, but
 # offline AutoBitLinear checkpoints also contain sibling `.weight_scale` tensors.
 # The heretic checkpoint stores unpacked ternary BF16 weights plus those scales;
