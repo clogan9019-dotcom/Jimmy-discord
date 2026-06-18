@@ -484,8 +484,18 @@ function Invoke-WslScript {
     Set-FileUtf8NoBom -Path $tmp -Text ($ScriptText -replace "`r`n", "`n")
     try {
         $tmpWsl = ConvertTo-WslPath $tmp
-        & wsl.exe -e bash $tmpWsl 2>&1 | ForEach-Object { Write-Host $_ }
-        $wslExitCode = $LASTEXITCODE
+        # WSL/llama.cpp writes normal progress to stderr. With ErrorActionPreference=Stop,
+        # piping stderr through PowerShell can turn harmless progress lines into exceptions.
+        # Temporarily relax it while streaming WSL output.
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            & wsl.exe -e bash $tmpWsl 2>&1 | ForEach-Object { Write-Host ([string]$_) }
+            $wslExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
         if ($wslExitCode -ne 0) {
             throw "WSL command failed with exit code ${wslExitCode}."
         }
@@ -586,7 +596,7 @@ F16=__F16_PATH__
 OUT=__OUT_PATH__
 mkdir -p "$(dirname "$OUT")"
 echo "[INFO] WSL quantizing $F16 -> $OUT"
-"$Q" "$F16" "$OUT" I2_S
+"$Q" "$F16" "$OUT" I2_S 4
 if [ ! -s "$OUT" ]; then
     echo "[ERROR] WSL quantization did not produce output: $OUT" >&2
     exit 4
