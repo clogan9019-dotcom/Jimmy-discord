@@ -1,0 +1,31 @@
+# Virtual environment
+.venv/
+
+# Runtime files
+memory.db
+logs/
+
+# Compiled bitnet.cpp source
+bitnet_cpp_src/
+
+# Model weights (too large for version control)
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Config with secrets
+# (keep config.yaml tracked as a template, but be careful with tokens)
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
