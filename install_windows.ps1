@@ -249,18 +249,7 @@ function Ensure-VSBuildTools {
     Write-Ok "Visual Studio C++ Build Tools found."
 
     if (-not (Test-ClangCLToolset)) {
-        $installPath = Get-VSInstallPath
-        try {
-            Invoke-VSInstallerModify -InstallPath $installPath
-        }
-        catch {
-            Write-Warn "Automatic Visual Studio modification failed: $($_.Exception.Message)"
-        }
-    }
-
-    if (-not (Test-ClangCLToolset)) {
-        Write-Warn "ClangCL still was not detected by the script. Continuing anyway; CMake will try ClangCL first, then fall back to the regular Visual Studio/MSVC generator."
-        Write-Warn "If CMake still says ClangCL is missing, close Visual Studio Installer, reopen this terminal, or manually install the two clang components."
+        Write-Warn "Visual Studio's ClangCL/MSBuild toolset was not detected. That's OK; this script will build with Ninja + clang-cl directly instead."
         return
     }
 
@@ -320,6 +309,143 @@ function Invoke-BasePython {
     if ($LASTEXITCODE -ne 0) { throw "Python command failed: $($Arguments -join ' ')" }
 }
 
+function Get-CommandSource {
+    param([Parameter(Mandatory = $true)][string]$CommandName)
+    $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Find-VcVars64 {
+    $installPath = Get-VSInstallPath
+    if ([string]::IsNullOrWhiteSpace($installPath)) { return $null }
+
+    $candidates = @(
+        (Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"),
+        (Join-Path $installPath "Common7\Tools\VsDevCmd.bat")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) { return $candidate }
+    }
+
+    return $null
+}
+
+function Find-ClangCl {
+    $candidates = @()
+
+    $fromPath = Get-CommandSource "clang-cl"
+    if ($fromPath) { $candidates += $fromPath }
+
+    $vsPath = Get-VSInstallPath
+    if (-not [string]::IsNullOrWhiteSpace($vsPath)) {
+        $candidates += @(
+            (Join-Path $vsPath "VC\Tools\Llvm\x64\bin\clang-cl.exe"),
+            (Join-Path $vsPath "VC\Tools\Llvm\bin\clang-cl.exe")
+        )
+
+        $llvmRoot = Join-Path $vsPath "VC\Tools"
+        if (Test-Path $llvmRoot) {
+            $found = Get-ChildItem -Path $llvmRoot -Filter "clang-cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $candidates += $found.FullName }
+        }
+    }
+
+    $candidates += @(
+        "C:\Program Files\LLVM\bin\clang-cl.exe",
+        "C:\Program Files (x86)\LLVM\bin\clang-cl.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    }
+
+    return $null
+}
+
+function Ensure-Ninja {
+    if (Get-Command "ninja" -ErrorAction SilentlyContinue) {
+        Write-Ok "Ninja found."
+        return (Get-CommandSource "ninja")
+    }
+
+    Install-WingetPackage -PackageId "Ninja-build.Ninja" -DisplayName "Ninja"
+    Refresh-Path
+
+    if (-not (Get-Command "ninja" -ErrorAction SilentlyContinue)) {
+        throw "Ninja was installed, but it is not on PATH yet. Close/reopen PowerShell and run this script again."
+    }
+
+    Write-Ok "Ninja installed."
+    return (Get-CommandSource "ninja")
+}
+
+function Ensure-ClangCl {
+    $clangCl = Find-ClangCl
+    if ($clangCl) {
+        Write-Ok "clang-cl found: $clangCl"
+        return $clangCl
+    }
+
+    Write-Warn "clang-cl.exe was not found. Installing standalone LLVM with winget..."
+    Install-WingetPackage -PackageId "LLVM.LLVM" -DisplayName "LLVM/Clang"
+    Refresh-Path
+
+    $clangCl = Find-ClangCl
+    if (-not $clangCl) {
+        throw "clang-cl.exe is still missing. Install LLVM manually from https://github.com/llvm/llvm-project/releases or install the Visual Studio Clang tools, then reopen PowerShell and rerun."
+    }
+
+    Write-Ok "clang-cl installed: $clangCl"
+    return $clangCl
+}
+
+function Quote-CmdArg {
+    param([Parameter(Mandatory = $true)][string]$Arg)
+    if ($Arg -match '[\s&()\[\]{}^=;!''+,`~]') {
+        return '"' + ($Arg -replace '"', '\"') + '"'
+    }
+    return $Arg
+}
+
+function Invoke-CheckedVsDev {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @(),
+        [string]$WorkingDirectory = ""
+    )
+
+    $vcvars = Find-VcVars64
+    if (-not $vcvars) {
+        throw "Could not find vcvars64.bat. Install Visual Studio C++ Build Tools, then rerun."
+    }
+
+    $cmdParts = @()
+    $cmdParts += "call $(Quote-CmdArg $vcvars) >nul"
+    if ($WorkingDirectory) {
+        $cmdParts += "cd /d $(Quote-CmdArg $WorkingDirectory)"
+    }
+
+    $resolvedFile = $FilePath
+    if (-not (Test-Path $resolvedFile)) {
+        $src = Get-CommandSource $FilePath
+        if ($src) { $resolvedFile = $src }
+    }
+
+    $commandLine = Quote-CmdArg $resolvedFile
+    foreach ($arg in $Arguments) {
+        $commandLine += " " + (Quote-CmdArg $arg)
+    }
+    $cmdParts += $commandLine
+
+    $cmdLine = $cmdParts -join " && "
+    & cmd.exe /d /s /c $cmdLine
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
+    }
+}
+
 function Get-QuantizerPath {
     $candidates = @(
         (Join-Path $BitnetDir "build\bin\Release\llama-quantize.exe"),
@@ -356,33 +482,30 @@ function Build-BitNetQuantizer {
         Remove-Item -Recurse -Force $buildDir
     }
 
-    Write-Info "Configuring BitNet build with CMake / Visual Studio / ClangCL..."
-    $configured = $false
-    $cmakeAttempts = @(
-        @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-T", "ClangCL,host=x64", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
-        @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-T", "ClangCL", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
-        @("-B", "build", "-T", "ClangCL", "-DBITNET_X86_TL2=OFF", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"),
-        @("-B", "build", "-G", "Visual Studio 17 2022", "-A", "x64", "-DBITNET_X86_TL2=OFF")
-    )
+    Write-Info "Checking Ninja and clang-cl for a Windows Ninja build..."
+    $ninjaPath = Ensure-Ninja
+    $clangClPath = Ensure-ClangCl
 
-    foreach ($args in $cmakeAttempts) {
-        try {
-            if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
-            Invoke-Checked "cmake" $args $BitnetDir
-            $configured = $true
-            break
-        }
-        catch {
-            Write-Warn $_.Exception.Message
-        }
+    Write-Info "Configuring BitNet build with CMake / Ninja / clang-cl..."
+    try {
+        if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
+        Invoke-CheckedVsDev "cmake" @(
+            "-B", "build",
+            "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBITNET_X86_TL2=OFF",
+            "-DCMAKE_C_COMPILER=$clangClPath",
+            "-DCMAKE_CXX_COMPILER=$clangClPath",
+            "-DCMAKE_MAKE_PROGRAM=$ninjaPath"
+        ) $BitnetDir
+    }
+    catch {
+        Write-Warn $_.Exception.Message
+        Die "CMake Ninja/clang-cl configuration failed. Make sure Visual Studio C++ Build Tools, Windows SDK, Ninja, and LLVM/clang-cl are installed. If your repo is under a path with spaces, move it to C:\Jimmy-discord and rerun."
     }
 
-    if (-not $configured) {
-        Die "CMake configuration failed. Open Visual Studio Installer -> Modify -> Individual components and install 'C++ Clang Compiler for Windows' plus 'MSBuild support for LLVM (clang-cl) toolset', then rerun install_windows.bat."
-    }
-
-    Write-Info "Compiling BitNet quantizer. This can take a while..."
-    Invoke-Checked "cmake" @("--build", "build", "--config", "Release") $BitnetDir
+    Write-Info "Compiling BitNet quantizer with Ninja. This can take a while..."
+    Invoke-CheckedVsDev "cmake" @("--build", "build", "--config", "Release") $BitnetDir
 
     $built = Get-QuantizerPath
     if (-not $built) {
