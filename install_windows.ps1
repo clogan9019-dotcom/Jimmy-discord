@@ -202,7 +202,7 @@ function Invoke-VSInstallerModify {
     $args = @(
         "modify",
         "--installPath", $InstallPath,
-        "--quiet", "--wait", "--norestart",
+        "--quiet", "--norestart",
         "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang",
         "--add", "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
     )
