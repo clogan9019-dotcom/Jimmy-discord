@@ -532,7 +532,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 need_pkgs=0
-for cmd in git cmake ninja python3 clang clang++; do
+for cmd in git cmake ninja python3 gcc g++; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         need_pkgs=1
     fi
@@ -542,7 +542,7 @@ if [ "$need_pkgs" = "1" ]; then
     if command -v apt-get >/dev/null 2>&1; then
         echo "[INFO] Installing WSL build packages (you may be asked for your WSL sudo password)..."
         sudo apt-get update
-        sudo apt-get install -y git cmake ninja-build clang build-essential python3
+        sudo apt-get install -y git cmake ninja-build build-essential python3
     else
         echo "[ERROR] Missing WSL build tools and apt-get is unavailable." >&2
         exit 2
@@ -569,7 +569,7 @@ python3 utils/codegen_tl2.py --model bitnet_b1_58-3B --BM 160,320,320 --BK 96,96
 if [ ! -x build/bin/llama-quantize ]; then
     rm -rf build
     echo "[INFO] WSL configuring BitNet build..."
-    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBITNET_X86_TL2=OFF -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBITNET_X86_TL2=OFF -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
     echo "[INFO] WSL compiling BitNet quantizer..."
     cmake --build build
 else
