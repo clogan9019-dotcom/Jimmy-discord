@@ -14,8 +14,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "token": "",
     },
     "bitnet": {
-        "executable": "./bitnet",
-        "model": "./models/heretic",
+        "src_dir": "./bitnet_cpp_src",
+        "model": "./models/heretic/ggml-model-i2_s.gguf",
         "threads": 4,
         "context": 4096,
         "temperature": 0.8,
@@ -41,18 +41,12 @@ class Config:
         self._data: dict[str, Any] = {}
         self._load()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _load(self) -> None:
-        """Load and merge config from disk with defaults."""
         if self._path.exists():
             with self._path.open("r", encoding="utf-8") as fh:
                 loaded: dict[str, Any] = yaml.safe_load(fh) or {}
         else:
             loaded = {}
-
         self._data = self._deep_merge(_DEFAULT_CONFIG, loaded)
 
     @staticmethod
@@ -66,7 +60,6 @@ class Config:
         return result
 
     def get(self, *keys: str, default: Any = None) -> Any:
-        """Retrieve a nested config value by dot-path keys."""
         node: Any = self._data
         for key in keys:
             if not isinstance(node, dict):
@@ -75,7 +68,7 @@ class Config:
         return node
 
     # ------------------------------------------------------------------
-    # Convenience accessors
+    # Typed accessors
     # ------------------------------------------------------------------
 
     @property
@@ -84,12 +77,12 @@ class Config:
         return str(token)
 
     @property
-    def bitnet_executable(self) -> str:
-        return str(self.get("bitnet", "executable", default="./bitnet"))
+    def bitnet_src_dir(self) -> str:
+        return str(self.get("bitnet", "src_dir", default="./bitnet_cpp_src"))
 
     @property
     def bitnet_model(self) -> str:
-        return str(self.get("bitnet", "model", default="./models/heretic"))
+        return str(self.get("bitnet", "model", default="./models/heretic/ggml-model-i2_s.gguf"))
 
     @property
     def bitnet_threads(self) -> int:
