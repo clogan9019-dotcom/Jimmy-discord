@@ -177,7 +177,7 @@ echo ""
 
 HERETIC_GGUF="${HERETIC_DIR}/ggml-model-i2_s.gguf"
 LLAMA_QUANTIZE="${BITNET_DIR}/build/bin/llama-quantize"
-CONVERT_SCRIPT="${BITNET_DIR}/3rdparty/llama.cpp/convert_hf_to_gguf.py"
+CONVERT_SCRIPT="${BITNET_DIR}/utils/convert-hf-to-gguf-bitnet.py"
 
 # ── 5a: Build bitnet.cpp using the official Microsoft model ───────────────────
 mkdir -p "${BUILD_MODEL_DIR}"
