@@ -260,10 +260,10 @@ PYEOF
 
     if [[ ! -f "${HERETIC_F16}" ]]; then
         # The heretic model uses a LLaMA-3 tiktoken tokenizer (tokenizer.json only,
-        # no tokenizer.model). Patch the BitNet converter to use _set_vocab_llama_hf()
-        # instead of _set_vocab_sentencepiece() for the BitnetForCausalLM class.
-        info "Patching BitNet converter to use LLaMA-3 tokenizer (llama_hf) for heretic model…"
-        sed -i 's/self\._set_vocab_sentencepiece()/self._set_vocab_llama_hf()/g' \
+        # no tokenizer.model). LLaMA-3 uses BPE (tiktoken), so patch the converter
+        # to call _set_vocab_gpt2() (BpeVocab) instead of _set_vocab_sentencepiece().
+        info "Patching BitNet converter to use LLaMA-3 BPE tokenizer (gpt2/BpeVocab) for heretic model…"
+        sed -i 's/self\._set_vocab_sentencepiece()/self._set_vocab_gpt2()/g' \
             "${BITNET_DIR}/utils/convert-hf-to-gguf-bitnet.py"
 
         info "Patching heretic config.json architecture name (BitNetForCausalLM → BitnetForCausalLM)…"
