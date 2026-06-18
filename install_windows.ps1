@@ -773,11 +773,18 @@ if ($NeedHereticDownload) {
     $downloadCode = @'
 import os
 import sys
+# Make large HF downloads more reliable. These must be set before importing huggingface_hub.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
 from huggingface_hub import snapshot_download
 repo_id, local_dir = sys.argv[1], sys.argv[2]
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 print(f"Downloading {repo_id} to {local_dir} ...", flush=True)
-snapshot_download(repo_id=repo_id, local_dir=local_dir, token=token)
+if token:
+    print("Using HF_TOKEN for authenticated Hugging Face download.", flush=True)
+else:
+    print("WARNING: HF_TOKEN is not set; download may be slower/rate-limited.", flush=True)
+snapshot_download(repo_id=repo_id, local_dir=local_dir, token=token, max_workers=1)
 print("Download complete.", flush=True)
 '@
     $downloadCode | & $VenvPython - $HereticRepo $HereticDir
