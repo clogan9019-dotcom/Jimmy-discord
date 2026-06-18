@@ -449,14 +449,19 @@ function Invoke-CheckedVsDev {
 
 function ConvertTo-WslPath {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Get-Command "wsl.exe" -ErrorAction SilentlyContinue)) {
-        throw "wsl.exe was not found."
+    # Avoid calling `wslpath` for Windows paths. On some Windows/WSL setups,
+    # backslashes get eaten before they reach wslpath, producing broken paths like
+    # C:[Usersname...]. Convert simple drive-letter paths directly instead.
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ($fullPath -match '^([A-Za-z]):\\(.*)$') {
+        $drive = $Matches[1].ToLowerInvariant()
+        $rest = $Matches[2] -replace '\\', '/'
+        return "/mnt/$drive/$rest"
     }
-    $out = & wsl.exe wslpath -a "$Path" 2>$null
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($out)) {
-        throw "Could not convert Windows path to WSL path: $Path"
+    if ($fullPath.StartsWith("\\")) {
+        throw "UNC paths are not supported for WSL conversion. Use a local drive path instead: $Path"
     }
-    return (($out | Select-Object -Last 1).Trim())
+    throw "Could not convert Windows path to WSL path: $Path"
 }
 
 function Quote-BashArg {
