@@ -752,13 +752,32 @@ catch {
 # -- Step 5: Download Heretic model --------------------------------------------
 Write-Info "Step 5/6: Downloading/checking Heretic model files..."
 New-Item -ItemType Directory -Force -Path $HereticDir | Out-Null
-if (-not (Test-Path (Join-Path $HereticDir "config.json"))) {
+$HereticConfig = Join-Path $HereticDir "config.json"
+$HereticWeights = Join-Path $HereticDir "model.safetensors"
+$NeedHereticDownload = $false
+
+if (-not (Test-Path $HereticConfig)) {
+    $NeedHereticDownload = $true
+}
+elseif (-not (Test-Path $HereticWeights)) {
+    Write-Warn "Heretic config exists but model.safetensors is missing. The previous download is incomplete."
+    $NeedHereticDownload = $true
+}
+elseif ((Get-Item $HereticWeights).Length -lt 1GB) {
+    Write-Warn "Heretic model.safetensors is smaller than 1 GB. It is probably a partial/LFS-pointer file; deleting it."
+    Remove-Item -Force $HereticWeights
+    $NeedHereticDownload = $true
+}
+
+if ($NeedHereticDownload) {
     $downloadCode = @'
+import os
 import sys
 from huggingface_hub import snapshot_download
 repo_id, local_dir = sys.argv[1], sys.argv[2]
+token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 print(f"Downloading {repo_id} to {local_dir} ...", flush=True)
-snapshot_download(repo_id=repo_id, local_dir=local_dir)
+snapshot_download(repo_id=repo_id, local_dir=local_dir, token=token)
 print("Download complete.", flush=True)
 '@
     $downloadCode | & $VenvPython - $HereticRepo $HereticDir
@@ -766,6 +785,10 @@ print("Download complete.", flush=True)
 }
 else {
     Write-Info "Heretic model files already present; skipping download."
+}
+
+if (-not (Test-Path $HereticWeights) -or (Get-Item $HereticWeights).Length -lt 1GB) {
+    Die "Heretic weights are still missing or too small: $HereticWeights. Delete models\heretic and rerun install_windows.bat."
 }
 Write-Ok "Heretic model files ready."
 
@@ -814,6 +837,10 @@ else {
 
         if (-not (Test-Path $HereticF16)) {
             Die "F16 GGUF conversion did not produce $HereticF16"
+        }
+        if ((Get-Item $HereticF16).Length -lt 1GB) {
+            Remove-Item -Force $HereticF16
+            Die "F16 GGUF conversion produced a metadata-only/too-small file. The Heretic weights were not loaded correctly. Delete models\heretic and rerun install_windows.bat."
         }
 
         Write-Ok "F16 GGUF created: $HereticF16"
