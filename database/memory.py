@@ -161,7 +161,7 @@ class ConversationMemory:
             parts: list[str] = [
                 system_prompt.strip(),
                 "",
-                "Recent shared server memory follows. Use it only if relevant.",
+                "Recent shared server memory follows. Use it only if relevant; do not continue the transcript.",
             ]
             for msg in messages:
                 if msg.role == "assistant":
@@ -169,9 +169,9 @@ class ConversationMemory:
                 elif msg.role == "system":
                     speaker = "System"
                 elif msg.user_id == uid:
-                    speaker = "Current user"
+                    speaker = "You"
                 else:
-                    speaker = f"User {msg.user_id[-4:]}"
+                    speaker = f"Other user {msg.user_id[-4:]}"
                 content = msg.content.strip()
                 if content:
                     parts.append(f"{speaker}: {content}")
