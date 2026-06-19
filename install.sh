@@ -197,10 +197,39 @@ else
     info "Phase 1/3: Generating BitNet ARM64 kernels and compiling bitnet.cpp…"
     info "(Compiling only — no Microsoft model download — takes 15-30 min)"
 
-    "${VENV_PYTHON}" utils/codegen_tl1.py         --model bitnet_b1_58-3B         --BM 160,320,320         --BK 64,128,64         --bm 32,64,32
+    "${VENV_PYTHON}" utils/codegen_tl1.py \
+        --model bitnet_b1_58-3B \
+        --BM 160,320,320 \
+        --BK 64,128,64 \
+        --bm 32,64,32
+
+    info "Patching llama.cpp ARM build flags for Raspberry Pi 4 compatibility (disable dotprod)…"
+    python3 - <<'PYEOF'
+from pathlib import Path
+p = Path("3rdparty/llama.cpp/ggml/src/CMakeLists.txt")
+text = p.read_text()
+# Raspberry Pi 4's Cortex-A72 does not support ARMv8.2 dot-product instructions.
+# llama.cpp's CMake checks compiler support, not runtime CPU support, and can
+# therefore emit dotprod instructions that crash with SIGILL on Pi 4.
+text = text.replace(
+    "add_compile_definitions(__ARM_FEATURE_DOTPROD)",
+    "# Jimmy-discord: disabled for Raspberry Pi 4 (Cortex-A72) compatibility\n            # add_compile_definitions(__ARM_FEATURE_DOTPROD)",
+)
+text = text.replace(
+    "list(APPEND ARCH_FLAGS -march=armv8.2-a+dotprod)",
+    "# Jimmy-discord: disabled for Raspberry Pi 4 (Cortex-A72) compatibility\n                # list(APPEND ARCH_FLAGS -march=armv8.2-a+dotprod)",
+)
+p.write_text(text)
+PYEOF
 
     rm -rf build
-    cmake -B build         -G Ninja         -DBITNET_ARM_TL1=OFF         -DCMAKE_BUILD_TYPE=Release         -DCMAKE_C_COMPILER=clang         -DCMAKE_CXX_COMPILER=clang++
+    cmake -B build \
+        -G Ninja \
+        -DBITNET_ARM_TL1=OFF \
+        -DGGML_NATIVE=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++
     cmake --build build --config Release
     success "BitNet binaries compiled."
 fi
