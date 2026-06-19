@@ -101,6 +101,15 @@ class BitNetProcess:
             "<|im_start|>",
         ):
             text = text.replace(marker, "")
+        # If a simple transcript model starts roleplaying the next turn, cut it.
+        for marker in ("\nUser:", "\n\nUser:"):
+            if marker in text:
+                text = text.split(marker, 1)[0]
+        # Some small models prefix every line with Assistant:. Keep the first
+        # answer text clean without damaging normal uses of the word.
+        if text.lstrip().startswith("Assistant:"):
+            leading = len(text) - len(text.lstrip())
+            text = text[:leading] + text.lstrip()[len("Assistant:"):].lstrip()
         return text
 
     # ------------------------------------------------------------------
@@ -160,11 +169,11 @@ class BitNetProcess:
             "--top-p", str(top_p),
             "--top-k", str(top_k),
             "--repeat-penalty", str(repeat_penalty),
-            # TinyDolphin often emits a special/end token immediately. Ignore EOS
-            # and filter special-token text in Python instead of using reverse
-            # prompts, because reverse prompts can stop generation before any
-            # useful text appears.
+            # TinyDolphin often emits a special/end token immediately, so ignore
+            # EOS. Stop when it tries to start a new fake user turn.
             "--ignore-eos",
+            "-r", "\nUser:",
+            "-r", "\n\nUser:",
             "-b", "1",
             "--no-display-prompt",
         ]
