@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
+
+from commands.tools import search_tool, shell_tool
 
 if TYPE_CHECKING:
     from bot import DiscordBitNetBot
@@ -22,6 +25,9 @@ _EDIT_INTERVAL = 0.8
 _MAX_CONTEXT_MESSAGES = 20
 # Maximum messages kept per user in the database
 _MAX_STORED_MESSAGES = 100
+# Maximum AI tool calls before returning a normal response
+_MAX_TOOL_ROUNDS = 2
+_TOOL_CALL_RE = re.compile(r"\[\[\s*(search|shell)\s*:\s*(.*?)\s*\]\]", re.IGNORECASE | re.DOTALL)
 
 
 def _split_message(text: str, limit: int = _DISCORD_LIMIT) -> list[str]:
@@ -42,6 +48,91 @@ def _split_message(text: str, limit: int = _DISCORD_LIMIT) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     return chunks
+
+
+def _tool_system_prompt(shell_allowed: bool) -> str:
+    tools = [
+        "You are Dolphin, a helpful AI assistant.",
+        "You may use lightweight tools when they would help.",
+        "To use web search, reply ONLY with: [[search: your search query]]",
+    ]
+    if shell_allowed:
+        tools.append("To inspect this Raspberry Pi with shell, reply ONLY with: [[shell: command]]")
+    tools.extend([
+        "Only call one tool at a time.",
+        "After a tool result is provided, answer the user's question normally.",
+        "Do not invent tool results. Do not show tool-call syntax unless you are calling a tool.",
+    ])
+    return "\n".join(tools)
+
+
+def _parse_tool_call(text: str) -> tuple[str, str] | None:
+    match = _TOOL_CALL_RE.search(text.strip())
+    if not match:
+        return None
+    tool = match.group(1).lower().strip()
+    arg = match.group(2).strip()
+    if not arg:
+        return None
+    return tool, arg
+
+
+async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
+    config = bot.config
+    chunks: list[str] = []
+    async for token in bot.model.generate(
+        prompt=prompt,
+        temperature=config.bitnet_temperature,
+        top_p=config.bitnet_top_p,
+        top_k=config.bitnet_top_k,
+        repeat_penalty=config.bitnet_repeat_penalty,
+        max_tokens=config.bitnet_max_tokens,
+    ):
+        chunks.append(token)
+    return "".join(chunks).strip()
+
+
+async def _generate_with_tools(
+    bot: "DiscordBitNetBot",
+    user: discord.abc.User,
+    prompt: str,
+    status_message: discord.Message | None = None,
+) -> str:
+    """Generate, execute AI-requested tools, then generate final answer."""
+    shell_allowed = await bot.is_owner(user)
+    current_prompt = prompt
+
+    for round_index in range(_MAX_TOOL_ROUNDS + 1):
+        output = await _collect_generation(bot, current_prompt)
+        tool_call = _parse_tool_call(output)
+        if tool_call is None or round_index >= _MAX_TOOL_ROUNDS:
+            return output
+
+        tool, arg = tool_call
+        if status_message is not None:
+            try:
+                await status_message.edit(content=f"🛠️ Using `{tool}` tool…")
+            except discord.HTTPException:
+                pass
+
+        if tool == "search":
+            tool_result = await search_tool(arg)
+        elif tool == "shell" and shell_allowed:
+            tool_result = await shell_tool(arg)
+        elif tool == "shell":
+            tool_result = "Shell tool is owner-only and unavailable for this user."
+        else:
+            tool_result = f"Unknown tool: {tool}"
+
+        # Keep tool result small enough for the model context on Raspberry Pi.
+        tool_result = tool_result[:2400]
+        current_prompt = (
+            f"{current_prompt}\n{output}\n"
+            f"Tool result for {tool}({arg!r}):\n{tool_result}\n"
+            "Assistant:"
+        )
+
+    return "*(No response generated)*"
 
 
 async def _stream_response(
@@ -68,10 +159,12 @@ async def _stream_response(
     # Trim stored history to avoid unbounded growth
     await memory.trim_history(user_id, max_messages=_MAX_STORED_MESSAGES)
 
-    # Build the full prompt with conversation context
+    # Build the full prompt with conversation context and tool instructions.
+    shell_allowed = await bot.is_owner(interaction.user)
     full_prompt = await memory.format_context(
         user_id=user_id,
         max_messages=_MAX_CONTEXT_MESSAGES,
+        system_prompt=_tool_system_prompt(shell_allowed),
     )
 
     # Send an initial "thinking" message
@@ -79,37 +172,17 @@ async def _stream_response(
     # Fetch the message we just sent so we can edit it
     followup_message = await interaction.original_response()
 
-    accumulated = ""
-    last_edit_content = ""
-    last_edit_time = asyncio.get_event_loop().time()
-
-    async with interaction.channel.typing():  # type: ignore[union-attr]
-        try:
-            async for token in model.generate(
-                prompt=full_prompt,
-                temperature=config.bitnet_temperature,
-                top_p=config.bitnet_top_p,
-                top_k=config.bitnet_top_k,
-                repeat_penalty=config.bitnet_repeat_penalty,
-                max_tokens=config.bitnet_max_tokens,
-            ):
-                accumulated += token
-                now = asyncio.get_event_loop().time()
-
-                # Edit the message periodically to stream tokens
-                if now - last_edit_time >= _EDIT_INTERVAL and accumulated != last_edit_content:
-                    preview = accumulated[:_DISCORD_LIMIT]
-                    try:
-                        await followup_message.edit(content=preview + " ▌")
-                    except discord.HTTPException:
-                        pass
-                    last_edit_time = now
-                    last_edit_content = accumulated
-
-        except Exception:
-            log.exception("Error during generation for user_id=%s", user_id)
-            await followup_message.edit(content="❌ An error occurred during generation.")
-            return
+    try:
+        accumulated = await _generate_with_tools(
+            bot=bot,
+            user=interaction.user,
+            prompt=full_prompt,
+            status_message=followup_message,
+        )
+    except Exception:
+        log.exception("Error during generation for user_id=%s", user_id)
+        await followup_message.edit(content="❌ An error occurred during generation.")
+        return
 
     # Final edit — remove cursor, show complete response
     if not accumulated.strip():
@@ -170,9 +243,11 @@ async def stream_message_chat(
     )
     await memory.trim_history(user_id, max_messages=_MAX_STORED_MESSAGES)
 
+    shell_allowed = await bot.is_owner(message.author)
     full_prompt = await memory.format_context(
         user_id=user_id,
         max_messages=_MAX_CONTEXT_MESSAGES,
+        system_prompt=_tool_system_prompt(shell_allowed),
     )
 
     try:
@@ -187,38 +262,20 @@ async def stream_message_chat(
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    accumulated = ""
-    last_edit_content = ""
-    last_edit_time = asyncio.get_event_loop().time()
-
-    async with message.channel.typing():  # type: ignore[union-attr]
+    try:
+        accumulated = await _generate_with_tools(
+            bot=bot,
+            user=message.author,
+            prompt=full_prompt,
+            status_message=reply_message,
+        )
+    except Exception:
+        log.exception("Error during message generation for user_id=%s", user_id)
         try:
-            async for token in model.generate(
-                prompt=full_prompt,
-                temperature=config.bitnet_temperature,
-                top_p=config.bitnet_top_p,
-                top_k=config.bitnet_top_k,
-                repeat_penalty=config.bitnet_repeat_penalty,
-                max_tokens=config.bitnet_max_tokens,
-            ):
-                accumulated += token
-                now = asyncio.get_event_loop().time()
-
-                if now - last_edit_time >= _EDIT_INTERVAL and accumulated != last_edit_content:
-                    preview = accumulated[:_DISCORD_LIMIT]
-                    try:
-                        await reply_message.edit(content=preview + " ▌")
-                    except discord.HTTPException:
-                        pass
-                    last_edit_time = now
-                    last_edit_content = accumulated
-        except Exception:
-            log.exception("Error during message generation for user_id=%s", user_id)
-            try:
-                await reply_message.edit(content="❌ An error occurred during generation.")
-            except discord.HTTPException:
-                pass
-            return
+            await reply_message.edit(content="❌ An error occurred during generation.")
+        except discord.HTTPException:
+            pass
+        return
 
     if not accumulated.strip():
         accumulated = "*(No response generated)*"
