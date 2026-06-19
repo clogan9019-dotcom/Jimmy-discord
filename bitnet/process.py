@@ -104,9 +104,10 @@ class BitNetProcess:
         # If a simple transcript model starts roleplaying the next turn, cut it.
         # Streaming is line-based, so sometimes "User:" arrives without the
         # leading newline; drop those chunks too.
-        if text.lstrip().startswith("User:"):
-            return ""
-        for marker in ("\nUser:", "\n\nUser:"):
+        for prefix in ("User:", "Current user:"):
+            if text.lstrip().startswith(prefix):
+                return ""
+        for marker in ("\nUser:", "\n\nUser:", "\nCurrent user:", "\n\nCurrent user:"):
             if marker in text:
                 text = text.split(marker, 1)[0]
         # Some small models prefix every line with Assistant:. Keep the first
@@ -180,6 +181,8 @@ class BitNetProcess:
             "-e",
             "-r", "\nUser:",
             "-r", "\n\nUser:",
+            "-r", "\nCurrent user:",
+            "-r", "\n\nCurrent user:",
             "-b", "1",
             "--no-display-prompt",
         ]
