@@ -160,10 +160,11 @@ class BitNetProcess:
             "--top-p", str(top_p),
             "--top-k", str(top_k),
             "--repeat-penalty", str(repeat_penalty),
+            # TinyDolphin often emits a special/end token immediately. Ignore EOS
+            # and filter special-token text in Python instead of using reverse
+            # prompts, because reverse prompts can stop generation before any
+            # useful text appears.
             "--ignore-eos",
-            "-r", "<|im_end|>",
-            "-r", "<|im_start|>",
-            "-r", "[end of text]",
             "-b", "1",
             "--no-display-prompt",
         ]
