@@ -17,8 +17,12 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Config with secrets
-# (keep config.yaml tracked as a template, but be careful with tokens)
+# Local config / secrets
+config.yaml
+config.local.yaml
+.env
+*.env
+.jimmy-discord.env
 
 # OS files
 .DS_Store
