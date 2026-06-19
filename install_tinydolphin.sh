@@ -153,7 +153,7 @@ text = path.read_text(encoding="utf-8")
 replacements = {
     "model": '  model: "./models/tinydolphin/tinydolphin-2.8.1-1.1b-q4_k_m.gguf"',
     "context": "  context: 2048",
-    "max_tokens": "  max_tokens: 192",
+    "max_tokens": "  max_tokens: 512",
     "temperature": "  temperature: 0.7",
     "top_p": "  top_p: 0.9",
     "top_k": "  top_k: 40",
