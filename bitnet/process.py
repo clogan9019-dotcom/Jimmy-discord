@@ -91,6 +91,13 @@ class BitNetProcess:
         Spawns run_inference.py, streams its stdout line by line, and
         yields each non-empty line as a chunk.
         """
+        # Microsoft BitNet's run_inference.py only accepts a small subset of
+        # llama-cli sampling flags. Passing unsupported flags such as --top-p,
+        # --top-k, or --repeat-penalty makes argparse exit with code 2, which
+        # produces an empty Discord response. Keep those settings in the public
+        # API for future direct llama-cli support, but do not pass them through
+        # this wrapper script.
+        _ = (top_p, top_k, repeat_penalty)
         cmd = [
             self._python,
             str(self._inference_script),
@@ -100,9 +107,6 @@ class BitNetProcess:
             "-temp", str(temperature),
             "-t", str(self._threads),
             "-c", str(self._context_length),
-            "--top-p", str(top_p),
-            "--top-k", str(top_k),
-            "--repeat-penalty", str(repeat_penalty),
         ]
 
         log.debug("Spawning inference: %s", " ".join(cmd[:6]) + " …")
@@ -123,8 +127,13 @@ class BitNetProcess:
         assert proc.stdout is not None
         assert proc.stderr is not None
 
-        # Drain stderr in the background so the pipe never blocks
-        asyncio.create_task(self._drain_stderr(proc), name="bitnet-stderr")
+        # Drain stderr in the background so the pipe never blocks. Keep a small
+        # copy so non-zero exits are diagnosable at INFO/WARNING log levels.
+        stderr_lines: list[str] = []
+        stderr_task = asyncio.create_task(
+            self._drain_stderr(proc, stderr_lines),
+            name="bitnet-stderr",
+        )
 
         # Stream stdout to the caller
         try:
@@ -137,16 +146,28 @@ class BitNetProcess:
             raise
 
         await proc.wait()
+        await stderr_task
 
         if proc.returncode not in (0, None):
-            log.warning("run_inference.py exited with code %d.", proc.returncode)
+            tail = "\n".join(stderr_lines[-20:])
+            if tail:
+                log.warning(
+                    "run_inference.py exited with code %d. stderr tail:\n%s",
+                    proc.returncode,
+                    tail,
+                )
+            else:
+                log.warning("run_inference.py exited with code %d.", proc.returncode)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _drain_stderr(proc: asyncio.subprocess.Process) -> None:
+    async def _drain_stderr(
+        proc: asyncio.subprocess.Process,
+        stderr_lines: list[str] | None = None,
+    ) -> None:
         """Log stderr from the inference subprocess."""
         if proc.stderr is None:
             return
@@ -154,6 +175,8 @@ class BitNetProcess:
             async for line in proc.stderr:
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 if decoded:
+                    if stderr_lines is not None:
+                        stderr_lines.append(decoded)
                     log.debug("bitnet stderr: %s", decoded)
         except Exception:
             pass
