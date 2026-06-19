@@ -22,6 +22,7 @@ from commands.admin import setup_admin_commands
 from commands.chat import setup_chat_command, stream_message_chat
 from commands.history import setup_history_commands
 from commands.stats import setup_stats_commands
+from commands.tools import setup_tool_commands
 from database.memory import ConversationMemory
 from utils.config import Config
 from utils.logger import get_logger, setup_logging
@@ -70,6 +71,7 @@ class DiscordBitNetBot(commands.Bot):
         setup_history_commands(self)
         setup_stats_commands(self)
         setup_admin_commands(self)
+        setup_tool_commands(self)
 
         # Sync application commands globally
         synced = await self.tree.sync()
