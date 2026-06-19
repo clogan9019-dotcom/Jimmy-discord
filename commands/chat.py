@@ -145,6 +145,114 @@ async def _stream_response(
     )
 
 
+async def stream_message_chat(
+    message: discord.Message,
+    bot: "DiscordBitNetBot",
+    prompt: str,
+) -> None:
+    """Run inference for a normal Discord message mention/reply.
+
+    This mirrors /chat behavior, but replies in-channel to a message when the
+    bot is @mentioned, DM'd, or replied to.
+    """
+    memory = bot.memory
+    model = bot.model
+    config = bot.config
+
+    user_id = message.author.id
+    guild_id = message.guild.id if message.guild else None
+
+    await memory.add_message(
+        user_id=user_id,
+        role="user",
+        content=prompt,
+        guild_id=guild_id,
+    )
+    await memory.trim_history(user_id, max_messages=_MAX_STORED_MESSAGES)
+
+    full_prompt = await memory.format_context(
+        user_id=user_id,
+        max_messages=_MAX_CONTEXT_MESSAGES,
+    )
+
+    try:
+        reply_message = await message.reply(
+            "⏳ Generating response…",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException:
+        reply_message = await message.channel.send(
+            "⏳ Generating response…",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    accumulated = ""
+    last_edit_content = ""
+    last_edit_time = asyncio.get_event_loop().time()
+
+    async with message.channel.typing():  # type: ignore[union-attr]
+        try:
+            async for token in model.generate(
+                prompt=full_prompt,
+                temperature=config.bitnet_temperature,
+                top_p=config.bitnet_top_p,
+                top_k=config.bitnet_top_k,
+                repeat_penalty=config.bitnet_repeat_penalty,
+                max_tokens=config.bitnet_max_tokens,
+            ):
+                accumulated += token
+                now = asyncio.get_event_loop().time()
+
+                if now - last_edit_time >= _EDIT_INTERVAL and accumulated != last_edit_content:
+                    preview = accumulated[:_DISCORD_LIMIT]
+                    try:
+                        await reply_message.edit(content=preview + " ▌")
+                    except discord.HTTPException:
+                        pass
+                    last_edit_time = now
+                    last_edit_content = accumulated
+        except Exception:
+            log.exception("Error during message generation for user_id=%s", user_id)
+            try:
+                await reply_message.edit(content="❌ An error occurred during generation.")
+            except discord.HTTPException:
+                pass
+            return
+
+    if not accumulated.strip():
+        accumulated = "*(No response generated)*"
+
+    chunks = _split_message(accumulated.strip())
+    try:
+        await reply_message.edit(content=chunks[0])
+    except discord.HTTPException as exc:
+        log.warning("Could not edit mention reply message: %s", exc)
+
+    for chunk in chunks[1:]:
+        try:
+            await message.channel.send(
+                chunk,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as exc:
+            log.warning("Could not send overflow mention chunk: %s", exc)
+
+    await memory.add_message(
+        user_id=user_id,
+        role="assistant",
+        content=accumulated.strip(),
+        guild_id=guild_id,
+    )
+
+    log.info(
+        "Mention/reply response delivered | user_id=%s guild_id=%s chars=%d",
+        user_id,
+        guild_id,
+        len(accumulated),
+    )
+
+
 def setup_chat_command(bot: "DiscordBitNetBot") -> None:
     """Register the /chat slash command on *bot*."""
 
