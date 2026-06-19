@@ -128,20 +128,21 @@ class ConversationMemory:
         self,
         user_id: int | str,
         max_messages: int = 20,
-        system_prompt: str = "You are a helpful AI assistant.",
+        system_prompt: str = "You are Dolphin, a helpful AI assistant.",
     ) -> str:
-        """Build a ChatML-style prompt string from the user's history.
+        """Build a simple instruction prompt from the user's history.
 
-        TinyDolphin/TinyLlama chat variants are trained with ChatML-style
-        markers. The previous <|system|>/<|user|> format worked poorly for
-        these GGUF models.
+        TinyDolphin can sometimes immediately emit an end token when prompted
+        with raw ChatML markers through older llama.cpp builds. A simple
+        User/Assistant transcript is less fancy, but much more reliable on the
+        Raspberry Pi llama-cli path.
         """
         messages = await self.get_history(user_id, limit=max_messages)
-        parts: list[str] = [f"<|im_start|>system\n{system_prompt}<|im_end|>"]
+        parts: list[str] = [system_prompt.strip(), ""]
         for msg in messages:
-            role = "user" if msg.role == "user" else "assistant"
-            parts.append(f"<|im_start|>{role}\n{msg.content}<|im_end|>")
-        parts.append("<|im_start|>assistant\n")
+            role = "User" if msg.role == "user" else "Assistant"
+            parts.append(f"{role}: {msg.content.strip()}")
+        parts.append("Assistant:")
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
