@@ -77,6 +77,74 @@ def _parse_tool_call(text: str) -> tuple[str, str] | None:
     return tool, arg
 
 
+def _detect_direct_tool(prompt: str, shell_allowed: bool) -> tuple[str, str] | None:
+    """Detect obvious user requests that should use a tool immediately.
+
+    TinyDolphin is tiny and will not reliably emit formal tool-call syntax, so
+    route clear requests deterministically instead of waiting for the model.
+    """
+    raw = prompt.strip()
+    lower = raw.lower().strip()
+
+    explicit = _parse_tool_call(raw)
+    if explicit:
+        tool, arg = explicit
+        if tool == "shell" and not shell_allowed:
+            return None
+        return tool, arg
+
+    search_prefixes = (
+        "search ",
+        "web search ",
+        "look up ",
+        "google ",
+        "search the web for ",
+        "search for ",
+    )
+    for prefix in search_prefixes:
+        if lower.startswith(prefix):
+            return "search", raw[len(prefix):].strip()
+
+    if any(phrase in lower for phrase in ("search the web", "look this up", "look up information", "find online")):
+        cleaned = re.sub(r"(?i)\b(please|can you|could you|would you|search the web|look this up|look up|find online|for|about)\b", " ", raw)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ?.!")
+        if cleaned:
+            return "search", cleaned
+
+    if not shell_allowed:
+        return None
+
+    shell_prefixes = ("$ ", "shell ", "run shell ", "run command ", "cmd ", "command ")
+    for prefix in shell_prefixes:
+        if lower.startswith(prefix):
+            return "shell", raw[len(prefix):].strip()
+
+    shell_patterns: list[tuple[tuple[str, ...], str]] = [
+        (("disk space", "free space", "storage", "drive space"), "df -h"),
+        (("memory", "ram"), "free -h"),
+        (("uptime",), "uptime"),
+        (("cpu temp", "temperature", "temp"), "vcgencmd measure_temp 2>/dev/null || awk '{printf \"temp=%.1fC\\n\", $1/1000}' /sys/class/thermal/thermal_zone0/temp"),
+        (("ip address", "local ip", "network address"), "hostname -I"),
+        (("running processes", "processes"), "ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -20"),
+        (("model files", "models folder", "list models"), "find models -maxdepth 3 -type f -printf '%p %k KB\\n' | sort"),
+    ]
+    if "shell" in lower or "terminal" in lower or "command" in lower or "check" in lower:
+        for keywords, command in shell_patterns:
+            if any(keyword in lower for keyword in keywords):
+                return "shell", command
+
+    return None
+
+
+async def _run_direct_tool(tool: str, arg: str) -> str:
+    if tool == "search":
+        return await search_tool(arg)
+    if tool == "shell":
+        result = await shell_tool(arg)
+        return f"I ran `{arg}` on the Pi:\n```\n{result}\n```"
+    return f"Unknown tool: {tool}"
+
+
 async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
     config = bot.config
     chunks: list[str] = []
@@ -172,13 +240,19 @@ async def _stream_response(
     # Fetch the message we just sent so we can edit it
     followup_message = await interaction.original_response()
 
+    direct_tool = _detect_direct_tool(prompt, shell_allowed)
     try:
-        accumulated = await _generate_with_tools(
-            bot=bot,
-            user=interaction.user,
-            prompt=full_prompt,
-            status_message=followup_message,
-        )
+        if direct_tool:
+            tool, arg = direct_tool
+            await followup_message.edit(content=f"🛠️ Using `{tool}` tool…")
+            accumulated = await _run_direct_tool(tool, arg)
+        else:
+            accumulated = await _generate_with_tools(
+                bot=bot,
+                user=interaction.user,
+                prompt=full_prompt,
+                status_message=followup_message,
+            )
     except Exception:
         log.exception("Error during generation for user_id=%s", user_id)
         await followup_message.edit(content="❌ An error occurred during generation.")
@@ -262,13 +336,19 @@ async def stream_message_chat(
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
+    direct_tool = _detect_direct_tool(prompt, shell_allowed)
     try:
-        accumulated = await _generate_with_tools(
-            bot=bot,
-            user=message.author,
-            prompt=full_prompt,
-            status_message=reply_message,
-        )
+        if direct_tool:
+            tool, arg = direct_tool
+            await reply_message.edit(content=f"🛠️ Using `{tool}` tool…")
+            accumulated = await _run_direct_tool(tool, arg)
+        else:
+            accumulated = await _generate_with_tools(
+                bot=bot,
+                user=message.author,
+                prompt=full_prompt,
+                status_message=reply_message,
+            )
     except Exception:
         log.exception("Error during message generation for user_id=%s", user_id)
         try:
