@@ -130,13 +130,18 @@ class ConversationMemory:
         max_messages: int = 20,
         system_prompt: str = "You are a helpful AI assistant.",
     ) -> str:
-        """Build a formatted prompt string from the user's conversation history."""
+        """Build a ChatML-style prompt string from the user's history.
+
+        TinyDolphin/TinyLlama chat variants are trained with ChatML-style
+        markers. The previous <|system|>/<|user|> format worked poorly for
+        these GGUF models.
+        """
         messages = await self.get_history(user_id, limit=max_messages)
-        parts: list[str] = [f"<|system|>\n{system_prompt}\n</s>"]
+        parts: list[str] = [f"<|im_start|>system\n{system_prompt}<|im_end|>"]
         for msg in messages:
-            tag = "<|user|>" if msg.role == "user" else "<|assistant|>"
-            parts.append(f"{tag}\n{msg.content}\n</s>")
-        parts.append("<|assistant|>")
+            role = "user" if msg.role == "user" else "assistant"
+            parts.append(f"<|im_start|>{role}\n{msg.content}<|im_end|>")
+        parts.append("<|im_start|>assistant\n")
         return "\n".join(parts)
 
     # ------------------------------------------------------------------
