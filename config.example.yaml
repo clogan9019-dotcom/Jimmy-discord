@@ -1,0 +1,28 @@
+discord:
+  # Your Discord bot token.
+  # Prefer DISCORD_TOKEN environment variable for real deployments.
+  token: ""
+
+bitnet:
+  # Path to bitnet.cpp/llama.cpp source or working directory.
+  src_dir: "./bitnet_cpp_src"
+  # Optional path to llama-cli/llama-cli.exe. Leave empty on Raspberry Pi.
+  executable: ""
+  # Fast TinyDolphin/TinyLlama uncensored GGUF model.
+  model: "./models/tinydolphin/tinydolphin-2.8.1-1.1b-q4_k_m.gguf"
+  threads: 4
+  context: 2048
+  # GPU layers for llama.cpp. "auto" enables GPU offload when a supported GPU is detected.
+  # Use 0 to force CPU, or 999/all to force maximum GPU offload.
+  gpu_layers: "auto"
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  max_tokens: 512
+
+database:
+  file: "memory.db"
+
+logging:
+  level: "INFO"
