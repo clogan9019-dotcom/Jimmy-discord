@@ -22,7 +22,7 @@ _DISCORD_LIMIT = 1990
 # How often to edit the streaming message (seconds)
 _EDIT_INTERVAL = 0.8
 # Maximum conversation history messages to include in context
-_MAX_CONTEXT_MESSAGES = 20
+_MAX_CONTEXT_MESSAGES = 8
 # Maximum messages kept per user in the database
 _MAX_STORED_MESSAGES = 100
 # Maximum AI tool calls before returning a normal response
@@ -150,7 +150,7 @@ def _clean_final_answer(text: str) -> str:
     text = text.strip()
 
     # Cut off fake transcript continuation.
-    for marker in ("\nUser:", "\n\nUser:"):
+    for marker in ("\nUser:", "\n\nUser:", "\nCurrent user:", "\n\nCurrent user:"):
         if marker in text:
             text = text.split(marker, 1)[0].strip()
 
@@ -177,7 +177,7 @@ def _clean_final_answer(text: str) -> str:
         stripped = line.strip()
         if any(phrase in stripped for phrase in blocked_phrases):
             continue
-        if stripped in {"User:", "Assistant:"}:
+        if stripped in {"User:", "Current user:", "Assistant:"}:
             continue
         cleaned_lines.append(line)
     return "\n".join(cleaned_lines).strip()
