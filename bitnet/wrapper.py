@@ -40,11 +40,13 @@ class BitNetModel:
         threads: int = 4,
         context_length: int = 4096,
         executable_path: str | Path | None = None,
+        gpu_layers: str | int = "auto",
     ) -> None:
         self._src_dir = Path(src_dir)
         self._model_path = Path(model_path)
         self._threads = threads
         self._context_length = context_length
+        self._gpu_layers_setting = gpu_layers
 
         self._process = BitNetProcess(
             src_dir=src_dir,
@@ -53,6 +55,7 @@ class BitNetModel:
             context_length=context_length,
             python_executable=sys.executable,
             executable_path=executable_path,
+            gpu_layers=gpu_layers,
         )
 
         self._loaded = False
@@ -177,6 +180,8 @@ class BitNetModel:
             "model_path": str(self._model_path),
             "threads": self._threads,
             "context_length": self._context_length,
+            "gpu_detected": self._process.gpu_detected,
+            "gpu_layers": self._process.gpu_layers,
             "total_inferences": self._total_inferences,
             "total_tokens_generated": self._total_tokens,
             "avg_tokens_per_second": round(avg_tps, 2),
