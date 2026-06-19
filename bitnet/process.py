@@ -112,6 +112,28 @@ class BitNetProcess:
             "<|im_start|>",
         ):
             text = text.replace(marker, "")
+
+        # Drop llama.cpp status/log lines if a build prints them on stdout. They
+        # are useful in terminals but look like the bot is saying "Loading model".
+        log_prefixes = (
+            "loading model",
+            "main:",
+            "llama_",
+            "ggml_",
+            "system_info:",
+            "sampling:",
+            "generate:",
+            "print_info:",
+            "load_tensors:",
+        )
+        kept_lines = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.strip().lower()
+            if stripped and any(stripped.startswith(prefix) for prefix in log_prefixes):
+                continue
+            kept_lines.append(line)
+        text = "".join(kept_lines)
+
         # If a simple transcript model starts roleplaying the next turn, cut it.
         # Streaming is line-based, so sometimes "User:" arrives without the
         # leading newline; drop those chunks too.
@@ -191,6 +213,7 @@ class BitNetProcess:
             "-r", "\n\nCurrent user:",
             "-b", "1",
             "--no-display-prompt",
+            "--log-disable",
         ]
 
         log.debug("Spawning inference: %s", " ".join(cmd[:8]) + " …")
