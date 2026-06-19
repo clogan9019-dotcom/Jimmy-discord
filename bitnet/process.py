@@ -51,6 +51,43 @@ class BitNetProcess:
         self._python = python_executable or sys.executable
         self._inference_script = self._src_dir / "run_inference.py"
 
+    def _subprocess_env(self) -> dict[str, str]:
+        """Environment for BitNet subprocesses.
+
+        The BitNet/llama.cpp build produces shared libraries such as
+        libllama.so under build subdirectories. When run_inference.py launches
+        build/bin/llama-cli, the dynamic linker may not find those libraries
+        unless LD_LIBRARY_PATH includes the directories containing .so files.
+        """
+        env = {**os.environ, "TOKENIZERS_PARALLELISM": "false"}
+        if os.name != "nt":
+            build_dir = self._src_dir / "build"
+            lib_dirs: list[str] = []
+            if build_dir.is_dir():
+                for lib in build_dir.rglob("*.so*"):
+                    parent = str(lib.parent)
+                    if parent not in lib_dirs:
+                        lib_dirs.append(parent)
+
+            # Include common locations even if globbing missed a symlink/name.
+            for candidate in (
+                build_dir / "bin",
+                build_dir / "src",
+                build_dir / "3rdparty" / "llama.cpp" / "src",
+                build_dir / "3rdparty" / "llama.cpp" / "ggml" / "src",
+            ):
+                if candidate.is_dir():
+                    parent = str(candidate)
+                    if parent not in lib_dirs:
+                        lib_dirs.append(parent)
+
+            if lib_dirs:
+                existing = env.get("LD_LIBRARY_PATH")
+                env["LD_LIBRARY_PATH"] = (
+                    ":".join(lib_dirs + [existing]) if existing else ":".join(lib_dirs)
+                )
+        return env
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -117,7 +154,7 @@ class BitNetProcess:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._src_dir),
-                env={**os.environ, "TOKENIZERS_PARALLELISM": "false"},
+                env=self._subprocess_env(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
