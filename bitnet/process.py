@@ -1,6 +1,6 @@
-"""Async subprocess runner for BitNet inference via run_inference.py.
+"""Async subprocess runner for local GGUF inference via llama-cli.
 
-Each generate() call spawns a fresh run_inference.py process, captures its
+Each generate() call spawns a fresh llama-cli process, captures its
 stdout, and streams the text back as chunks.  The InferenceQueue in utils/queue.py
 guarantees only one process runs at a time, so there is no resource contention.
 """
@@ -18,13 +18,13 @@ log = logging.getLogger(__name__)
 
 
 class BitNetProcess:
-    """Runs BitNet inference by calling run_inference.py as a subprocess.
+    """Runs local GGUF inference by calling llama-cli as a subprocess.
 
     Parameters
     ----------
     src_dir:
         Path to the cloned bitnet_cpp_src directory that contains
-        run_inference.py.
+        build/bin/llama-cli.
     model_path:
         Path to the quantized GGUF model file.
     threads:
@@ -50,6 +50,9 @@ class BitNetProcess:
         self._context_length = context_length
         self._python = python_executable or sys.executable
         self._inference_script = self._src_dir / "run_inference.py"
+        self._cli_path = self._src_dir / "build" / "bin" / (
+            "llama-cli.exe" if os.name == "nt" else "llama-cli"
+        )
 
     def _subprocess_env(self) -> dict[str, str]:
         """Environment for BitNet subprocesses.
@@ -104,6 +107,11 @@ class BitNetProcess:
                 f"run_inference.py not found at '{self._inference_script}'. "
                 "Ensure bitnet_cpp_src was cloned correctly."
             )
+        if not self._cli_path.is_file():
+            raise RuntimeError(
+                f"llama-cli not found at '{self._cli_path}'. "
+                "Run install.sh or install_tinydolphin.sh to build llama.cpp first."
+            )
         if not self._model_path.is_file():
             raise RuntimeError(
                 f"Model file not found: '{self._model_path}'. "
@@ -125,28 +133,26 @@ class BitNetProcess:
     ) -> AsyncIterator[str]:
         """Run inference for *prompt* and yield output text chunks.
 
-        Spawns run_inference.py, streams its stdout line by line, and
+        Spawns llama-cli, streams its stdout line by line, and
         yields each non-empty line as a chunk.
         """
-        # Microsoft BitNet's run_inference.py only accepts a small subset of
-        # llama-cli sampling flags. Passing unsupported flags such as --top-p,
-        # --top-k, or --repeat-penalty makes argparse exit with code 2, which
-        # produces an empty Discord response. Keep those settings in the public
-        # API for future direct llama-cli support, but do not pass them through
-        # this wrapper script.
-        _ = (top_p, top_k, repeat_penalty)
         cmd = [
-            self._python,
-            str(self._inference_script),
+            str(self._cli_path),
             "-m", str(self._model_path),
-            "-p", prompt,
             "-n", str(max_tokens),
-            "-temp", str(temperature),
             "-t", str(self._threads),
+            "-p", prompt,
+            "-ngl", "0",
             "-c", str(self._context_length),
+            "--temp", str(temperature),
+            "--top-p", str(top_p),
+            "--top-k", str(top_k),
+            "--repeat-penalty", str(repeat_penalty),
+            "-b", "1",
+            "--no-display-prompt",
         ]
 
-        log.debug("Spawning inference: %s", " ".join(cmd[:6]) + " …")
+        log.debug("Spawning inference: %s", " ".join(cmd[:8]) + " …")
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -158,7 +164,7 @@ class BitNetProcess:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"Could not launch Python interpreter '{self._python}': {exc}"
+                f"Could not launch llama-cli '{self._cli_path}': {exc}"
             ) from exc
 
         assert proc.stdout is not None
@@ -189,12 +195,12 @@ class BitNetProcess:
             tail = "\n".join(stderr_lines[-20:])
             if tail:
                 log.warning(
-                    "run_inference.py exited with code %d. stderr tail:\n%s",
+                    "llama-cli exited with code %d. stderr tail:\n%s",
                     proc.returncode,
                     tail,
                 )
             else:
-                log.warning("run_inference.py exited with code %d.", proc.returncode)
+                log.warning("llama-cli exited with code %d.", proc.returncode)
 
     # ------------------------------------------------------------------
     # Internal
