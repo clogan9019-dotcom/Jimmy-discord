@@ -149,8 +149,19 @@ def _clean_final_answer(text: str) -> str:
     """Remove prompt/tool-instruction leakage from small-model outputs."""
     text = text.strip()
 
-    # Cut off fake transcript continuation.
-    for marker in ("\nUser:", "\n\nUser:", "\nCurrent user:", "\n\nCurrent user:"):
+    # Cut off fake transcript continuation. If the model starts directly with a
+    # fake user turn, treat that as empty so fallback generation can try again.
+    for prefix in ("User:", "Current user:", "Other user"):
+        if text.lstrip().startswith(prefix):
+            return ""
+    for marker in (
+        "\nUser:",
+        "\n\nUser:",
+        "\nCurrent user:",
+        "\n\nCurrent user:",
+        "\nOther user",
+        "\n\nOther user",
+    ):
         if marker in text:
             text = text.split(marker, 1)[0].strip()
 
@@ -201,11 +212,16 @@ async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
 def _fallback_prompt(user_prompt: str) -> str:
     """Very small prompt used if the richer memory/tool prompt yields nothing."""
     return (
-        "You are Dolphin, a helpful concise AI assistant.\n"
-        "Answer directly in plain text. Do not write User: or Assistant:.\n\n"
+        "Instruction: Answer the question directly and briefly.\n"
+        "Do not write a conversation transcript.\n\n"
         f"Question: {user_prompt.strip()}\n"
         "Answer:"
     )
+
+
+def _last_chance_prompt(user_prompt: str) -> str:
+    return f"{user_prompt.strip()}\n\nShort answer:"
+
 
 async def _generate_with_fallback(
     bot: "DiscordBitNetBot",
@@ -213,10 +229,14 @@ async def _generate_with_fallback(
     user_prompt: str,
 ) -> str:
     output = await _collect_generation(bot, prompt)
-    if output.strip():
+    if _clean_final_answer(output).strip():
         return output
-    log.warning("Primary generation returned no text; retrying with a minimal fallback prompt.")
-    return await _collect_generation(bot, _fallback_prompt(user_prompt))
+    log.warning("Primary generation returned no usable text; retrying with a minimal fallback prompt.")
+    output = await _collect_generation(bot, _fallback_prompt(user_prompt))
+    if _clean_final_answer(output).strip():
+        return output
+    log.warning("Minimal fallback returned no usable text; retrying with last-chance prompt.")
+    return await _collect_generation(bot, _last_chance_prompt(user_prompt))
 
 
 async def _generate_with_tools(
@@ -325,7 +345,9 @@ async def _stream_response(
     if not accumulated.strip():
         accumulated = _clean_final_answer(await _collect_generation(bot, _fallback_prompt(prompt)))
     if not accumulated.strip():
-        accumulated = "*(No response generated)*"
+        accumulated = _clean_final_answer(await _collect_generation(bot, _last_chance_prompt(prompt)))
+    if not accumulated.strip():
+        accumulated = "I couldn't generate a useful response. Try rephrasing that."
 
     chunks = _split_message(accumulated.strip())
 
@@ -427,7 +449,9 @@ async def stream_message_chat(
     if not accumulated.strip():
         accumulated = _clean_final_answer(await _collect_generation(bot, _fallback_prompt(prompt)))
     if not accumulated.strip():
-        accumulated = "*(No response generated)*"
+        accumulated = _clean_final_answer(await _collect_generation(bot, _last_chance_prompt(prompt)))
+    if not accumulated.strip():
+        accumulated = "I couldn't generate a useful response. Try rephrasing that."
 
     chunks = _split_message(accumulated.strip())
     try:
