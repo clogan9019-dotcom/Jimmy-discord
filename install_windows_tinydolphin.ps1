@@ -171,6 +171,7 @@ replacements = {
     "model": '  model: "./models/tinydolphin/tinydolphin-2.8.1-1.1b-q4_k_m.gguf"',
     "threads": "  threads: 4",
     "context": "  context: 2048",
+    "gpu_layers": '  gpu_layers: "auto"',
     "temperature": "  temperature: 0.7",
     "top_p": "  top_p: 0.9",
     "top_k": "  top_k: 40",
@@ -219,24 +220,44 @@ p.write_text("\n".join(out) + "\n", encoding="utf-8")
     }
 }
 
+function Get-WindowsGpuName {
+    try {
+        $names = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name
+        $usable = @($names | Where-Object {
+            $_ -and
+            $_ -notmatch "Microsoft Basic|Remote Display|Parsec|Virtual|Mirror" -and
+            $_ -match "NVIDIA|GeForce|RTX|GTX|Quadro|AMD|Radeon|Intel|Arc"
+        })
+        if ($usable.Count -gt 0) { return ($usable -join "; ") }
+    }
+    catch { }
+    return ""
+}
+
 function Install-LlamaCppWindowsBinary {
     param([Parameter(Mandatory = $true)][string]$DestinationDir)
 
     $cli = Join-Path $DestinationDir "llama-cli.exe"
-    if (Test-Path $cli) {
-        Write-Ok "llama-cli.exe already present: $cli"
-        return
-    }
 
-    Write-Info "Downloading latest llama.cpp Windows binary..."
+    Write-Info "Checking latest llama.cpp Windows binary..."
     New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 
     $headers = @{ "User-Agent" = "Jimmy-Discord-Windows-Installer" }
     $release = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
-    $assets = @($release.assets | Where-Object {
-        $_.name -match "bin-win.*x64.*\.zip$" -and
-        $_.name -notmatch "cuda|vulkan|kompute|sycl|opencl|hip|rocm"
-    })
+    $allWinAssets = @($release.assets | Where-Object { $_.name -match "bin-win.*x64.*\.zip$" })
+    $gpuName = Get-WindowsGpuName
+    $preferGpu = -not [string]::IsNullOrWhiteSpace($gpuName)
+    if ($preferGpu) {
+        Write-Info "Detected GPU: $gpuName"
+        $assets = @($allWinAssets | Where-Object { $_.name -match "vulkan" -and $_.name -notmatch "kompute|sycl|opencl|hip|rocm" })
+        if (-not $assets -or $assets.Count -eq 0) {
+            Write-Warn "No Vulkan llama.cpp Windows asset found; falling back to CPU build."
+            $preferGpu = $false
+        }
+    }
+    if (-not $preferGpu) {
+        $assets = @($allWinAssets | Where-Object { $_.name -notmatch "cuda|vulkan|kompute|sycl|opencl|hip|rocm" })
+    }
 
     if (-not $assets -or $assets.Count -eq 0) {
         Write-Warn "Could not find a suitable llama.cpp Windows release asset. Available assets:"
@@ -250,6 +271,17 @@ function Install-LlamaCppWindowsBinary {
     if (-not $asset) { $asset = @($assets | Select-Object -First 1) }
     $asset = $asset[0]
 
+    $marker = Join-Path $DestinationDir ".llama_asset"
+    if ((Test-Path $cli) -and (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $asset.name)) {
+        Write-Ok "llama-cli.exe already present: $cli"
+        return
+    }
+    if (Test-Path $cli) {
+        Write-Info "Replacing existing llama.cpp binary with selected asset: $($asset.name)"
+        Remove-Item -Recurse -Force $DestinationDir
+        New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+    }
+
     Write-Info "Selected asset: $($asset.name)"
     $tmpZip = Join-Path $env:TEMP ("llama-cpp-" + [guid]::NewGuid().ToString() + ".zip")
     $tmpExtract = Join-Path $env:TEMP ("llama-cpp-" + [guid]::NewGuid().ToString())
@@ -259,6 +291,7 @@ function Install-LlamaCppWindowsBinary {
         $found = Get-ChildItem -Path $tmpExtract -Filter "llama-cli.exe" -Recurse | Select-Object -First 1
         if (-not $found) { Die "Downloaded llama.cpp zip did not contain llama-cli.exe" }
         Copy-Item -Path (Join-Path $found.Directory.FullName "*") -Destination $DestinationDir -Recurse -Force
+        Set-Content -Path (Join-Path $DestinationDir ".llama_asset") -Value $asset.name -Encoding ASCII
     }
     finally {
         Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
