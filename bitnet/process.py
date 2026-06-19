@@ -282,7 +282,6 @@ class BitNetProcess:
             "--ignore-eos",
             "-b", "1",
             "--no-display-prompt",
-            "--log-disable",
         ]
 
         log.debug(
