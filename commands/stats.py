@@ -60,6 +60,14 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
         uptime_str = f"{hours}h {minutes}m {seconds}s"
 
         memory_mb = _get_memory_usage_mb()
+        gpu_detected = bool(model_stats.get("gpu_detected"))
+        gpu_layers = int(model_stats.get("gpu_layers", 0) or 0)
+        if gpu_layers > 0:
+            compute_backend = f"🎮 GPU ({gpu_layers} layer{'s' if gpu_layers != 1 else ''} offloaded)"
+        elif gpu_detected:
+            compute_backend = "🖥️ CPU (GPU detected, offload disabled)"
+        else:
+            compute_backend = "🖥️ CPU"
 
         embed = discord.Embed(
             title="📊 Bot Statistics",
@@ -89,6 +97,11 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
         embed.add_field(
             name="🤖 Model Loaded",
             value="✅ Yes" if model_stats["loaded"] else "❌ No",
+            inline=True,
+        )
+        embed.add_field(
+            name="🖥️ Compute",
+            value=compute_backend,
             inline=True,
         )
         embed.add_field(
@@ -122,10 +135,10 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
             inline=True,
         )
         embed.add_field(
-            name="🎮 GPU Offload",
+            name="🎮 GPU Details",
             value=(
-                f"Detected: {'✅' if model_stats.get('gpu_detected') else '❌'}\n"
-                f"Layers: {model_stats.get('gpu_layers', 0)}"
+                f"Detected: {'✅' if gpu_detected else '❌'}\n"
+                f"Offload layers: {gpu_layers}"
             ),
             inline=True,
         )
