@@ -19,6 +19,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "model": "./models/heretic/ggml-model-i2_s.gguf",
         "threads": 4,
         "context": 4096,
+        "gpu_layers": "auto",
         "temperature": 0.8,
         "top_p": 0.95,
         "top_k": 40,
@@ -96,6 +97,11 @@ class Config:
     @property
     def bitnet_context(self) -> int:
         return int(self.get("bitnet", "context", default=4096))
+
+    @property
+    def bitnet_gpu_layers(self) -> str:
+        """GPU layer setting for llama.cpp. Use 'auto', '0', or a number."""
+        return str(self.get("bitnet", "gpu_layers", default="auto"))
 
     @property
     def bitnet_temperature(self) -> float:
