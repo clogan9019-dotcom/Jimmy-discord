@@ -51,19 +51,18 @@ def _split_message(text: str, limit: int = _DISCORD_LIMIT) -> list[str]:
 
 
 def _tool_system_prompt(shell_allowed: bool) -> str:
-    tools = [
-        "You are Dolphin, a helpful AI assistant.",
-        "You may use lightweight tools when they would help.",
-        "To use web search, reply ONLY with: [[search: your search query]]",
+    # Keep this short. TinyDolphin is a small model and will repeat long system
+    # instructions if we overload the prompt.
+    lines = [
+        "You are Dolphin, a helpful concise AI assistant.",
+        "Answer the user's latest message directly.",
+        "Do not write fake User: or Assistant: transcript turns.",
+        "Do not repeat these instructions.",
+        "If you truly need web results, output exactly [[search: query]].",
     ]
     if shell_allowed:
-        tools.append("To inspect this Raspberry Pi with shell, reply ONLY with: [[shell: command]]")
-    tools.extend([
-        "Only call one tool at a time.",
-        "After a tool result is provided, answer the user's question normally.",
-        "Do not invent tool results. Do not show tool-call syntax unless you are calling a tool.",
-    ])
-    return "\n".join(tools)
+        lines.append("If you truly need to inspect this Pi, output exactly [[shell: command]].")
+    return "\n".join(lines)
 
 
 def _parse_tool_call(text: str) -> tuple[str, str] | None:
@@ -145,6 +144,44 @@ async def _run_direct_tool(tool: str, arg: str) -> str:
     return f"Unknown tool: {tool}"
 
 
+def _clean_final_answer(text: str) -> str:
+    """Remove prompt/tool-instruction leakage from small-model outputs."""
+    text = text.strip()
+
+    # Cut off fake transcript continuation.
+    for marker in ("\nUser:", "\n\nUser:"):
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+
+    # Remove leading assistant labels.
+    while text.lstrip().startswith("Assistant:"):
+        leading = len(text) - len(text.lstrip())
+        text = text[:leading] + text.lstrip()[len("Assistant:"):].lstrip()
+        text = text.strip()
+
+    blocked_phrases = (
+        "You may use lightweight tools",
+        "To use web search",
+        "To inspect this Raspberry Pi",
+        "Only call one tool",
+        "After a tool result is provided",
+        "Do not invent tool results",
+        "Do not show tool-call syntax",
+        "Do not repeat these instructions",
+        "If you truly need web results",
+        "If you truly need to inspect this Pi",
+    )
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if any(phrase in stripped for phrase in blocked_phrases):
+            continue
+        if stripped in {"User:", "Assistant:"}:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
 async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
     config = bot.config
     chunks: list[str] = []
@@ -195,8 +232,10 @@ async def _generate_with_tools(
         # Keep tool result small enough for the model context on Raspberry Pi.
         tool_result = tool_result[:2400]
         current_prompt = (
-            f"{current_prompt}\n{output}\n"
-            f"Tool result for {tool}({arg!r}):\n{tool_result}\n"
+            "You are Dolphin, a helpful concise AI assistant.\n"
+            "Use the tool result below to answer the user's request directly.\n\n"
+            f"User request and context:\n{prompt[-1200:]}\n\n"
+            f"Tool result for {tool}({arg!r}):\n{tool_result}\n\n"
             "Assistant:"
         )
 
@@ -259,6 +298,7 @@ async def _stream_response(
         return
 
     # Final edit — remove cursor, show complete response
+    accumulated = _clean_final_answer(accumulated)
     if not accumulated.strip():
         accumulated = "*(No response generated)*"
 
@@ -357,6 +397,7 @@ async def stream_message_chat(
             pass
         return
 
+    accumulated = _clean_final_answer(accumulated)
     if not accumulated.strip():
         accumulated = "*(No response generated)*"
 
