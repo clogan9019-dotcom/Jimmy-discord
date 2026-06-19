@@ -421,6 +421,41 @@ model-f16.gguf -> ggml-model-i2_s.gguf
 
 ---
 
+## GPU support
+
+The bot supports llama.cpp GPU offload with automatic detection.
+
+In `config.yaml`:
+
+```yaml
+bitnet:
+  gpu_layers: "auto"
+```
+
+Behavior:
+
+- `auto` detects a supported GPU and passes `-ngl 999` to `llama-cli`.
+- `0`, `cpu`, or `off` forces CPU-only mode.
+- `999`, `all`, or `max` forces maximum GPU offload.
+- Any number such as `20` offloads that many layers.
+
+On Windows, `install_windows_tinydolphin.ps1` detects NVIDIA/AMD/Intel GPUs and prefers a Vulkan-enabled llama.cpp binary. On Raspberry Pi 4, GPU offload stays disabled because the VideoCore GPU is not useful for this llama.cpp path.
+
+You can override at runtime:
+
+```powershell
+$env:JIMMY_GPU_LAYERS="0"      # force CPU
+$env:JIMMY_GPU_LAYERS="999"    # force GPU offload
+```
+
+or on Linux:
+
+```bash
+export JIMMY_GPU_LAYERS=0
+```
+
+---
+
 ## Configuration
 
 Current default `config.yaml` uses TinyDolphin:
