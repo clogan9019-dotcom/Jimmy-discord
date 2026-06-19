@@ -219,20 +219,10 @@ class BitNetProcess:
             kept_lines.append(line)
         text = "".join(kept_lines)
 
-        # If a simple transcript model starts roleplaying the next turn, cut it.
-        # Streaming is line-based, so sometimes "User:" arrives without the
-        # leading newline; drop those chunks too.
-        for prefix in ("User:", "Current user:"):
-            if text.lstrip().startswith(prefix):
-                return ""
-        for marker in ("\nUser:", "\n\nUser:", "\nCurrent user:", "\n\nCurrent user:"):
-            if marker in text:
-                text = text.split(marker, 1)[0]
-        # Some small models prefix every line with Assistant:. Keep the first
-        # answer text clean without damaging normal uses of the word.
-        if text.lstrip().startswith("Assistant:"):
-            leading = len(text) - len(text.lstrip())
-            text = text[:leading] + text.lstrip()[len("Assistant:"):].lstrip()
+        # Do not strip transcript markers here. The higher-level chat command
+        # sees the full output and trims fake User:/Assistant: continuations
+        # after generation. Stripping line-by-line here can turn a usable answer
+        # into an empty response.
         return text
 
     # ------------------------------------------------------------------
@@ -287,15 +277,9 @@ class BitNetProcess:
             "--top-p", str(top_p),
             "--top-k", str(top_k),
             "--repeat-penalty", str(repeat_penalty),
-            # TinyDolphin often emits a special/end token immediately, so ignore
-            # EOS. Stop when it tries to start a new fake user turn. `-e` makes
-            # the reverse prompts treat \n as a real newline.
+            # TinyDolphin can emit EOS immediately. Ignore EOS and let the
+            # higher-level response cleaner trim fake transcript continuations.
             "--ignore-eos",
-            "-e",
-            "-r", "\nUser:",
-            "-r", "\n\nUser:",
-            "-r", "\nCurrent user:",
-            "-r", "\n\nCurrent user:",
             "-b", "1",
             "--no-display-prompt",
             "--log-disable",
