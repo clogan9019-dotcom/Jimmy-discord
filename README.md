@@ -196,6 +196,34 @@ or:
 
 Use this if your Pi downloads slowly or you want to download the AI file on your main PC and copy it over.
 
+## Optional: run the bot directly on Windows
+
+If you want to run the bot on Windows instead of the Pi, use the Windows TinyDolphin setup script:
+
+```powershell
+cd "C:\Users\cgrif\Projects\Jimmy 2\Jimmy-discord"
+git pull
+.\install_windows_tinydolphin.bat
+```
+
+The script downloads a prebuilt `llama-cli.exe`, downloads TinyDolphin if needed, and updates `config.yaml` with:
+
+```yaml
+bitnet:
+  src_dir: "."
+  executable: "./llama_cpp_win/llama-cli.exe"
+  model: "./models/tinydolphin/tinydolphin-2.8.1-1.1b-q4_k_m.gguf"
+```
+
+Then run:
+
+```powershell
+.\.venv-win\Scripts\Activate.ps1
+$env:DISCORD_TOKEN="your_token_here"
+python bot.py
+```
+
+
 ## 1. Download the TinyDolphin GGUF on Windows
 
 Install aria2:
