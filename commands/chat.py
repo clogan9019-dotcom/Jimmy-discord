@@ -198,6 +198,27 @@ async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
     return "".join(chunks).strip()
 
 
+def _fallback_prompt(user_prompt: str) -> str:
+    """Very small prompt used if the richer memory/tool prompt yields nothing."""
+    return (
+        "You are Dolphin, a helpful concise AI assistant.\n"
+        "Answer directly in plain text. Do not write User: or Assistant:.\n\n"
+        f"Question: {user_prompt.strip()}\n"
+        "Answer:"
+    )
+
+async def _generate_with_fallback(
+    bot: "DiscordBitNetBot",
+    prompt: str,
+    user_prompt: str,
+) -> str:
+    output = await _collect_generation(bot, prompt)
+    if output.strip():
+        return output
+    log.warning("Primary generation returned no text; retrying with a minimal fallback prompt.")
+    return await _collect_generation(bot, _fallback_prompt(user_prompt))
+
+
 async def _generate_with_tools(
     bot: "DiscordBitNetBot",
     user: discord.abc.User,
@@ -209,7 +230,7 @@ async def _generate_with_tools(
     current_prompt = prompt
 
     for round_index in range(_MAX_TOOL_ROUNDS + 1):
-        output = await _collect_generation(bot, current_prompt)
+        output = await _generate_with_fallback(bot, current_prompt, prompt)
         tool_call = _parse_tool_call(output)
         if tool_call is None or round_index >= _MAX_TOOL_ROUNDS:
             return output
@@ -301,6 +322,8 @@ async def _stream_response(
 
     # Final edit — remove cursor, show complete response
     accumulated = _clean_final_answer(accumulated)
+    if not accumulated.strip():
+        accumulated = _clean_final_answer(await _collect_generation(bot, _fallback_prompt(prompt)))
     if not accumulated.strip():
         accumulated = "*(No response generated)*"
 
@@ -401,6 +424,8 @@ async def stream_message_chat(
         return
 
     accumulated = _clean_final_answer(accumulated)
+    if not accumulated.strip():
+        accumulated = _clean_final_answer(await _collect_generation(bot, _fallback_prompt(prompt)))
     if not accumulated.strip():
         accumulated = "*(No response generated)*"
 
