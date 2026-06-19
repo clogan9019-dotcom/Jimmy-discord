@@ -43,6 +43,7 @@ class BitNetProcess:
         threads: int = 4,
         context_length: int = 4096,
         python_executable: str | None = None,
+        executable_path: str | Path | None = None,
     ) -> None:
         self._src_dir = Path(src_dir).resolve()
         self._model_path = Path(model_path).resolve()
@@ -50,9 +51,14 @@ class BitNetProcess:
         self._context_length = context_length
         self._python = python_executable or sys.executable
         self._inference_script = self._src_dir / "run_inference.py"
-        self._cli_path = self._src_dir / "build" / "bin" / (
-            "llama-cli.exe" if os.name == "nt" else "llama-cli"
-        )
+        if executable_path:
+            self._cli_path = Path(executable_path).resolve()
+            self._custom_executable = True
+        else:
+            self._cli_path = self._src_dir / "build" / "bin" / (
+                "llama-cli.exe" if os.name == "nt" else "llama-cli"
+            )
+            self._custom_executable = False
 
     def _subprocess_env(self) -> dict[str, str]:
         """Environment for BitNet subprocesses.
@@ -63,7 +69,12 @@ class BitNetProcess:
         unless LD_LIBRARY_PATH includes the directories containing .so files.
         """
         env = {**os.environ, "TOKENIZERS_PARALLELISM": "false"}
-        if os.name != "nt":
+        if os.name == "nt":
+            # Windows needs DLLs from the llama.cpp binary directory on PATH.
+            cli_dir = str(self._cli_path.parent)
+            existing_path = env.get("PATH", "")
+            env["PATH"] = cli_dir + (os.pathsep + existing_path if existing_path else "")
+        else:
             build_dir = self._src_dir / "build"
             lib_dirs: list[str] = []
             if build_dir.is_dir():
@@ -123,15 +134,10 @@ class BitNetProcess:
 
     def validate(self) -> None:
         """Raise RuntimeError if the required files are missing."""
-        if not self._src_dir.is_dir():
+        if not self._custom_executable and not self._src_dir.is_dir():
             raise RuntimeError(
                 f"BitNet src_dir not found: '{self._src_dir}'. "
                 "Run install.sh to clone and build bitnet.cpp."
-            )
-        if not self._inference_script.is_file():
-            raise RuntimeError(
-                f"run_inference.py not found at '{self._inference_script}'. "
-                "Ensure bitnet_cpp_src was cloned correctly."
             )
         if not self._cli_path.is_file():
             raise RuntimeError(
@@ -194,7 +200,7 @@ class BitNetProcess:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._src_dir),
+                cwd=str(self._src_dir if self._src_dir.is_dir() else self._cli_path.parent),
                 env=self._subprocess_env(),
             )
         except FileNotFoundError as exc:
