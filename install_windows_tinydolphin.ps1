@@ -115,10 +115,36 @@ function Download-File {
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$OutFile
     )
-    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-        Invoke-Checked "curl.exe" @("-L", "--fail", "--retry", "10", "--retry-delay", "5", "-o", $OutFile, $Url)
+
+    $outDir = Split-Path -Parent $OutFile
+    $outName = Split-Path -Leaf $OutFile
+    if (-not [string]::IsNullOrWhiteSpace($outDir)) {
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    }
+
+    if (Get-Command aria2c -ErrorAction SilentlyContinue) {
+        Write-Info "Downloading with aria2 multi-connection downloader: $outName"
+        Invoke-Checked "aria2c" @(
+            "--continue=true",
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+            "--max-connection-per-server=16",
+            "--split=16",
+            "--min-split-size=1M",
+            "--file-allocation=none",
+            "--summary-interval=5",
+            "--console-log-level=warn",
+            "-d", $outDir,
+            "-o", $outName,
+            $Url
+        )
+    }
+    elseif (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        Write-Warn "aria2c was not found; falling back to curl.exe."
+        Invoke-Checked "curl.exe" @("-L", "--fail", "--retry", "10", "--retry-delay", "5", "-C", "-", "-o", $OutFile, $Url)
     }
     else {
+        Write-Warn "aria2c/curl.exe not found; falling back to Invoke-WebRequest."
         Invoke-WebRequest -Uri $Url -OutFile $OutFile
     }
 }
@@ -260,6 +286,7 @@ Write-Host "===========================================================" -Foregr
 Write-Host ""
 
 Ensure-Command -CommandName "git" -PackageId "Git.Git" -DisplayName "Git"
+Ensure-Command -CommandName "aria2c" -PackageId "aria2.aria2" -DisplayName "aria2"
 
 $script:BasePython = Find-Python
 if ($null -eq $script:BasePython) {
