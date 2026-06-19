@@ -91,6 +91,18 @@ class BitNetProcess:
                 )
         return env
 
+    @staticmethod
+    def _clean_output_chunk(text: str) -> str:
+        """Remove common special-token strings from llama-cli output."""
+        for marker in (
+            "[end of text]",
+            "<|endoftext|>",
+            "<|im_end|>",
+            "<|im_start|>",
+        ):
+            text = text.replace(marker, "")
+        return text
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -148,6 +160,10 @@ class BitNetProcess:
             "--top-p", str(top_p),
             "--top-k", str(top_k),
             "--repeat-penalty", str(repeat_penalty),
+            "--ignore-eos",
+            "-r", "<|im_end|>",
+            "-r", "<|im_start|>",
+            "-r", "[end of text]",
             "-b", "1",
             "--no-display-prompt",
         ]
@@ -181,7 +197,7 @@ class BitNetProcess:
         # Stream stdout to the caller
         try:
             async for line in proc.stdout:
-                text = line.decode("utf-8", errors="replace")
+                text = self._clean_output_chunk(line.decode("utf-8", errors="replace"))
                 if text:
                     yield text
         except asyncio.CancelledError:
