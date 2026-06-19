@@ -1,4 +1,4 @@
-"""Lightweight utility commands: web search and owner-only shell."""
+"""Lightweight utility commands and AI-callable tools."""
 
 from __future__ import annotations
 
@@ -111,13 +111,6 @@ def _format_search_results(query: str, results: list[dict[str, str]]) -> str:
     return text[:3900]
 
 
-def _shell_enabled() -> bool:
-    return os.environ.get("JIMMY_SHELL_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 async def _run_shell(command: str) -> tuple[int | None, str]:
@@ -147,6 +140,21 @@ async def _run_shell(command: str) -> tuple[int | None, str]:
     return proc.returncode, combined.strip()
 
 
+async def search_tool(query: str) -> str:
+    """AI-callable lightweight web search tool."""
+    results = await asyncio.to_thread(_search_duckduckgo, query, _SEARCH_LIMIT)
+    return _format_search_results(query, results)
+
+
+async def shell_tool(command: str) -> str:
+    """AI-callable shell tool. Caller must enforce owner-only access."""
+    returncode, output = await _run_shell(command)
+    header = "timed out" if returncode is None else f"exit {returncode}"
+    if len(output) > _OUTPUT_LIMIT:
+        output = output[-_OUTPUT_LIMIT:]
+        output = "... output truncated ...\n" + output
+    return f"{header}\n{output}"
+
 def setup_tool_commands(bot: "DiscordBitNetBot") -> None:
     """Register lightweight utility slash commands."""
 
@@ -155,31 +163,19 @@ def setup_tool_commands(bot: "DiscordBitNetBot") -> None:
     async def search(interaction: discord.Interaction, query: str) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            results = await asyncio.to_thread(_search_duckduckgo, query, _SEARCH_LIMIT)
-            await interaction.followup.send(_format_search_results(query, results))
+            await interaction.followup.send(await search_tool(query))
             log.info("Search requested by user_id=%s query=%r", interaction.user.id, query)
         except Exception as exc:
             log.exception("Search failed for query=%r", query)
             await interaction.followup.send(f"❌ Search failed: `{type(exc).__name__}: {exc}`")
 
-    @bot.tree.command(name="shell", description="Owner-only shell command. Disabled unless JIMMY_SHELL_ENABLED=1.")
+    @bot.tree.command(name="shell", description="Owner-only shell command on the Pi.")
     @app_commands.describe(command="Shell command to run on the Pi.")
     async def shell(interaction: discord.Interaction, command: str) -> None:
         if not await bot.is_owner(interaction.user):
             await interaction.response.send_message("❌ Owner only.", ephemeral=True)
             return
-        if not _shell_enabled():
-            await interaction.response.send_message(
-                "❌ Shell is disabled. Start the bot with `JIMMY_SHELL_ENABLED=1` to enable it.",
-                ephemeral=True,
-            )
-            return
-
         await interaction.response.defer(thinking=True, ephemeral=True)
-        returncode, output = await _run_shell(command)
-        header = "timed out" if returncode is None else f"exit {returncode}"
-        if len(output) > _OUTPUT_LIMIT:
-            output = output[-_OUTPUT_LIMIT:]
-            output = "... output truncated ...\n" + output
-        await interaction.followup.send(f"`{header}`\n```\n{output}\n```", ephemeral=True)
+        output = await shell_tool(command)
+        await interaction.followup.send(f"```\n{output}\n```", ephemeral=True)
         log.warning("Shell command run by owner user_id=%s: %s", interaction.user.id, command)
