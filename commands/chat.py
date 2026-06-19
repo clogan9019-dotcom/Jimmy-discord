@@ -55,6 +55,7 @@ def _tool_system_prompt(shell_allowed: bool) -> str:
     # instructions if we overload the prompt.
     lines = [
         "You are Dolphin, a helpful concise AI assistant.",
+        "You can use recent shared server memory to answer questions about what you or others said.",
         "Answer the user's latest message directly.",
         "Do not write fake User: or Assistant: transcript turns.",
         "Do not repeat these instructions.",
@@ -272,6 +273,7 @@ async def _stream_response(
         user_id=user_id,
         max_messages=_MAX_CONTEXT_MESSAGES,
         system_prompt=_tool_system_prompt(shell_allowed),
+        guild_id=guild_id,
     )
 
     # Send an initial "thinking" message
@@ -362,6 +364,7 @@ async def stream_message_chat(
         user_id=user_id,
         max_messages=_MAX_CONTEXT_MESSAGES,
         system_prompt=_tool_system_prompt(shell_allowed),
+        guild_id=guild_id,
     )
 
     try:
