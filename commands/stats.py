@@ -122,6 +122,14 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
             inline=True,
         )
         embed.add_field(
+            name="🎮 GPU Offload",
+            value=(
+                f"Detected: {'✅' if model_stats.get('gpu_detected') else '❌'}\n"
+                f"Layers: {model_stats.get('gpu_layers', 0)}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
             name="🧠 Global Memory",
             value="✅ Enabled",
             inline=True,
