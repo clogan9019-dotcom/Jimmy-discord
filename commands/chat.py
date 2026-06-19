@@ -145,6 +145,53 @@ async def _run_direct_tool(tool: str, arg: str) -> str:
     return f"Unknown tool: {tool}"
 
 
+def _trim_repetitive_or_template_text(text: str) -> str:
+    """Trim common tiny-model loops and placeholder/template signatures."""
+    text = text.strip()
+    if not text:
+        return text
+
+    hard_stop_markers = (
+        "Best regards,",
+        "[Your Name]",
+        "[Your Job Title",
+        "[Your Company]",
+        "[Your Email",
+        "[Your Phone",
+        "[Your Message]",
+        "share your thoughts and experiences with us on our website",
+        "social media channels",
+    )
+    cut_positions = [text.find(marker) for marker in hard_stop_markers if marker in text]
+    if cut_positions:
+        text = text[: max(0, min(cut_positions))].strip()
+
+    loop_phrases = (
+        "I apologize for the inconvenience caused by my inability to provide helpful responses.",
+        "If you have any additional questions or need assistance",
+        "Thank you for reaching out to me!",
+        "I hope this helps you!",
+    )
+    for phrase in loop_phrases:
+        first = text.find(phrase)
+        if first != -1:
+            second = text.find(phrase, first + len(phrase))
+            if second != -1:
+                text = text[:second].strip()
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    seen: set[str] = set()
+    kept: list[str] = []
+    for sentence in sentences:
+        normalized = re.sub(r"\s+", " ", sentence.strip().lower())
+        if len(normalized) > 30 and normalized in seen:
+            break
+        if normalized:
+            seen.add(normalized)
+            kept.append(sentence)
+    return (" ".join(kept).strip() if kept else text.strip())
+
+
 def _clean_final_answer(text: str) -> str:
     """Remove prompt/tool-instruction leakage from small-model outputs."""
     text = text.strip()
@@ -191,7 +238,7 @@ def _clean_final_answer(text: str) -> str:
         if stripped in {"User:", "Current user:", "Assistant:"}:
             continue
         cleaned_lines.append(line)
-    return "\n".join(cleaned_lines).strip()
+    return _trim_repetitive_or_template_text("\n".join(cleaned_lines))
 
 
 async def _collect_generation(bot: "DiscordBitNetBot", prompt: str) -> str:
