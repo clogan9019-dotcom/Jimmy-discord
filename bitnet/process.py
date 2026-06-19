@@ -102,6 +102,10 @@ class BitNetProcess:
         ):
             text = text.replace(marker, "")
         # If a simple transcript model starts roleplaying the next turn, cut it.
+        # Streaming is line-based, so sometimes "User:" arrives without the
+        # leading newline; drop those chunks too.
+        if text.lstrip().startswith("User:"):
+            return ""
         for marker in ("\nUser:", "\n\nUser:"):
             if marker in text:
                 text = text.split(marker, 1)[0]
@@ -170,8 +174,10 @@ class BitNetProcess:
             "--top-k", str(top_k),
             "--repeat-penalty", str(repeat_penalty),
             # TinyDolphin often emits a special/end token immediately, so ignore
-            # EOS. Stop when it tries to start a new fake user turn.
+            # EOS. Stop when it tries to start a new fake user turn. `-e` makes
+            # the reverse prompts treat \n as a real newline.
             "--ignore-eos",
+            "-e",
             "-r", "\nUser:",
             "-r", "\n\nUser:",
             "-b", "1",
