@@ -19,7 +19,7 @@ from discord.ext import commands
 
 from bitnet.wrapper import BitNetModel
 from commands.admin import setup_admin_commands
-from commands.chat import setup_chat_command
+from commands.chat import setup_chat_command, stream_message_chat
 from commands.history import setup_history_commands
 from commands.stats import setup_stats_commands
 from database.memory import ConversationMemory
@@ -35,7 +35,9 @@ class DiscordBitNetBot(commands.Bot):
 
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
-        intents.message_content = False  # not needed for slash commands
+        # Needed so the bot can read normal messages when @mentioned or replied to.
+        # Also enable "Message Content Intent" in the Discord Developer Portal.
+        intents.message_content = True
 
         super().__init__(
             command_prefix="!",  # prefix commands disabled; slash commands only
@@ -100,7 +102,7 @@ class DiscordBitNetBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.listening,
-                name="/chat",
+                name="/chat or @mentions",
             )
         )
 
@@ -109,6 +111,74 @@ class DiscordBitNetBot(commands.Bot):
 
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         log.info("Left guild: %s (id=%s)", guild.name, guild.id)
+
+    async def on_message(self, message: discord.Message) -> None:
+        """Respond when mentioned, DM'd, or replied to.
+
+        Slash commands still work; this adds a natural chat path:
+        - @Jimmy hello
+        - reply to one of Jimmy's messages
+        - DM the bot
+        """
+        if message.author.bot:
+            return
+        if self.user is None:
+            return
+
+        # Let discord.py process prefix commands if any are added later.
+        await self.process_commands(message)
+
+        is_dm = message.guild is None
+        mentioned = self.user in message.mentions
+        replied_to_me = False
+
+        if message.reference and message.reference.message_id:
+            resolved = message.reference.resolved
+            ref_message: discord.Message | None = None
+            if isinstance(resolved, discord.Message):
+                ref_message = resolved
+            else:
+                try:
+                    ref_message = await message.channel.fetch_message(message.reference.message_id)
+                except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                    ref_message = None
+            replied_to_me = bool(ref_message and ref_message.author.id == self.user.id)
+
+        if not (is_dm or mentioned or replied_to_me):
+            return
+
+        prompt = message.content or ""
+        # Remove the bot mention from the user prompt.
+        prompt = prompt.replace(f"<@{self.user.id}>", "")
+        prompt = prompt.replace(f"<@!{self.user.id}>", "")
+        prompt = prompt.strip()
+
+        if not prompt:
+            # Avoid queueing completely empty prompts from bare mentions/replies.
+            prompt = "Hello"
+
+        queue = self.inference_queue
+        position = queue.size + (1 if queue.is_busy else 0)
+        if position > 0:
+            try:
+                await message.reply(
+                    f"⏳ Queued (position **{position + 1}**).",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                pass
+
+        from utils.queue import InferenceJob  # local import to avoid circular deps
+
+        job = InferenceJob(
+            user_id=message.author.id,
+            guild_id=message.guild.id if message.guild else None,
+            channel_id=message.channel.id,  # type: ignore[arg-type]
+            prompt=prompt,
+            callback=lambda: stream_message_chat(message, self, prompt),
+        )
+        await queue.enqueue(job)
 
     async def on_error(self, event: str, *args: object, **kwargs: object) -> None:
         log.exception("Unhandled error in event '%s'.", event)
