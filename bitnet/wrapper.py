@@ -39,6 +39,7 @@ class BitNetModel:
         model_path: str | Path,
         threads: int = 4,
         context_length: int = 4096,
+        executable_path: str | Path | None = None,
     ) -> None:
         self._src_dir = Path(src_dir)
         self._model_path = Path(model_path)
@@ -51,6 +52,7 @@ class BitNetModel:
             threads=threads,
             context_length=context_length,
             python_executable=sys.executable,
+            executable_path=executable_path,
         )
 
         self._loaded = False
