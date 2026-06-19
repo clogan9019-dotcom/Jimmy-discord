@@ -77,6 +77,7 @@ sudo apt-get install -y \
     git \
     cmake \
     build-essential \
+    clang \
     ninja-build \
     libopenblas-dev \
     libgomp1 \
@@ -188,41 +189,20 @@ cd "${BITNET_DIR}"
 if [[ -f "${LLAMA_QUANTIZE}" ]]; then
     info "BitNet binary already compiled — skipping build step."
 else
-    # Pre-download the Microsoft model using Python's snapshot_download.
-    # This bypasses setup_env.py's internal huggingface-cli call, which fails
-    # when the install path contains spaces.
-    # setup_env.py appends the model name to --model-dir, so the effective
-    # download target is BUILD_MODEL_DIR/<model_name>.
-    BUILD_MODEL_NAME="$(basename "${BUILD_MODEL_REPO}")"
-    BUILD_MODEL_DOWNLOAD_DIR="${BUILD_MODEL_DIR}/${BUILD_MODEL_NAME}"
-    mkdir -p "${BUILD_MODEL_DOWNLOAD_DIR}"
+    # Compile bitnet.cpp directly. The old installer called setup_env.py with
+    # microsoft/BitNet-b1.58-2B-4T, which also downloaded/converted the official
+    # Microsoft model just to get build artifacts. That is unnecessary when this
+    # project uses the Heretic model, and it causes huge unwanted downloads when
+    # you only need to rebuild Raspberry-Pi-native binaries.
+    info "Phase 1/3: Generating BitNet ARM64 kernels and compiling bitnet.cpp…"
+    info "(Compiling only — no Microsoft model download — takes 15-30 min)"
 
-    if [[ ! -f "${BUILD_MODEL_DOWNLOAD_DIR}/config.json" ]]; then
-        info "Phase 1/3: Downloading ${BUILD_MODEL_REPO} model…"
-        info "(~2 GB — may take 10-20 min depending on your connection)"
-        "${VENV_PYTHON}" - <<PYEOF
-import sys
-from huggingface_hub import snapshot_download
-print("Downloading ${BUILD_MODEL_REPO} ...", flush=True)
-try:
-    snapshot_download(repo_id="${BUILD_MODEL_REPO}", local_dir="${BUILD_MODEL_DOWNLOAD_DIR}")
-    print("Download complete.", flush=True)
-except Exception as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    sys.exit(1)
-PYEOF
-        success "Microsoft model downloaded."
-    else
-        info "Microsoft model already present — skipping download."
-    fi
+    "${VENV_PYTHON}" utils/codegen_tl1.py         --model bitnet_b1_58-3B         --BM 160,320,320         --BK 64,128,64         --bm 32,64,32
 
-    info "Phase 1/3: Building bitnet.cpp via setup_env.py (using ${BUILD_MODEL_REPO})…"
-    info "(Compiling only — model already downloaded — takes 15-30 min)"
-    "${VENV_PYTHON}" setup_env.py \
-        --hf-repo "${BUILD_MODEL_REPO}" \
-        --model-dir "${BUILD_MODEL_DIR}" \
-        -q i2_s
-    success "BitNet binary compiled."
+    rm -rf build
+    cmake -B build         -G Ninja         -DBITNET_ARM_TL1=OFF         -DCMAKE_BUILD_TYPE=Release         -DCMAKE_C_COMPILER=clang         -DCMAKE_CXX_COMPILER=clang++
+    cmake --build build --config Release
+    success "BitNet binaries compiled."
 fi
 
 cd "${SCRIPT_DIR}"
