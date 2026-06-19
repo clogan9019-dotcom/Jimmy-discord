@@ -120,6 +120,11 @@ class ConversationMemory:
         gid = str(guild_id) if guild_id is not None else None
         return await asyncio.to_thread(self._fetch_global_history, gid, limit)
 
+    async def stats(self, guild_id: int | str | None = None) -> dict[str, int | bool]:
+        """Return memory statistics for status/stats displays."""
+        gid = str(guild_id) if guild_id is not None else None
+        return await asyncio.to_thread(self._stats, gid)
+
     async def clear_history(self, user_id: int | str) -> int:
         """Delete all messages for *user_id*. Returns number of rows deleted."""
         uid = str(user_id)
@@ -260,6 +265,48 @@ class ConversationMemory:
             )
             for r in reversed(rows)
         ]
+
+    def _stats(self, guild_id: str | None) -> dict[str, int | bool]:
+        with self._connect() as conn:
+            total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            total_users = conn.execute("SELECT COUNT(DISTINCT user_id) FROM messages").fetchone()[0]
+            total_assistant = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE role = 'assistant'"
+            ).fetchone()[0]
+
+            if guild_id is None:
+                scope_messages = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE guild_id IS NULL"
+                ).fetchone()[0]
+                scope_users = conn.execute(
+                    "SELECT COUNT(DISTINCT user_id) FROM messages WHERE guild_id IS NULL"
+                ).fetchone()[0]
+                scope_assistant = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE guild_id IS NULL AND role = 'assistant'"
+                ).fetchone()[0]
+            else:
+                scope_messages = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE guild_id = ?",
+                    (guild_id,),
+                ).fetchone()[0]
+                scope_users = conn.execute(
+                    "SELECT COUNT(DISTINCT user_id) FROM messages WHERE guild_id = ?",
+                    (guild_id,),
+                ).fetchone()[0]
+                scope_assistant = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE guild_id = ? AND role = 'assistant'",
+                    (guild_id,),
+                ).fetchone()[0]
+
+        return {
+            "global_enabled": True,
+            "total_messages": int(total_messages),
+            "total_users": int(total_users),
+            "total_assistant_messages": int(total_assistant),
+            "scope_messages": int(scope_messages),
+            "scope_users": int(scope_users),
+            "scope_assistant_messages": int(scope_assistant),
+        }
 
     def _delete_history(self, user_id: str) -> int:
         with self._connect() as conn:
