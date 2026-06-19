@@ -52,6 +52,7 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
 
         model_stats = bot.model.stats
         queue_stats = bot.inference_queue.stats
+        memory_stats = await bot.memory.stats(interaction.guild_id)
 
         uptime_seconds = time.monotonic() - bot.start_time
         hours, remainder = divmod(int(uptime_seconds), 3600)
@@ -118,6 +119,29 @@ def setup_stats_commands(bot: "DiscordBitNetBot") -> None:
         embed.add_field(
             name="📏 Context Length",
             value=str(model_stats["context_length"]),
+            inline=True,
+        )
+        embed.add_field(
+            name="🧠 Global Memory",
+            value="✅ Enabled",
+            inline=True,
+        )
+        embed.add_field(
+            name="💬 This Server Memory",
+            value=(
+                f"{memory_stats['scope_messages']} messages\n"
+                f"{memory_stats['scope_users']} user(s)\n"
+                f"{memory_stats['scope_assistant_messages']} bot replies"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="🗃️ Total Memory DB",
+            value=(
+                f"{memory_stats['total_messages']} messages\n"
+                f"{memory_stats['total_users']} user(s)\n"
+                f"{memory_stats['total_assistant_messages']} bot replies"
+            ),
             inline=True,
         )
 
