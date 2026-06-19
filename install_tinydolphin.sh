@@ -74,7 +74,10 @@ else
 fi
 
 cd "${BITNET_DIR}"
-if [[ ! -x "build/bin/llama-cli" ]]; then
+if [[ ! -x "build/bin/llama-cli" || ! -f "build/.jimmy-pi4-safe" ]]; then
+    if [[ -x "build/bin/llama-cli" && ! -f "build/.jimmy-pi4-safe" ]]; then
+        warn "Existing llama-cli build may contain Pi-4-incompatible dotprod instructions; rebuilding."
+    fi
     info "Building llama-cli for this Raspberry Pi (no model download)..."
     "${VENV_PYTHON}" utils/codegen_tl1.py \
         --model bitnet_b1_58-3B \
@@ -107,6 +110,7 @@ PYEOF
         -DCMAKE_C_COMPILER=clang \
         -DCMAKE_CXX_COMPILER=clang++
     cmake --build build --config Release
+    touch build/.jimmy-pi4-safe
 fi
 cd "${SCRIPT_DIR}"
 [[ -x "${BITNET_DIR}/build/bin/llama-cli" ]] || die "llama-cli was not built."
