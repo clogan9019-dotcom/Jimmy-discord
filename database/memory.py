@@ -1,6 +1,6 @@
 """SQLite-backed conversation memory store.
 
-Each user's history is stored independently — User A never sees User B's context.
+Messages are stored with per-user and per-guild metadata so the bot can use recent shared server memory when responding.
 """
 
 from __future__ import annotations
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_user
     ON messages (user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_guild
+    ON messages (guild_id, created_at);
 """
 
 
@@ -108,6 +111,15 @@ class ConversationMemory:
         uid = str(user_id)
         return await asyncio.to_thread(self._fetch_history, uid, limit)
 
+    async def get_global_history(
+        self,
+        guild_id: int | str | None,
+        limit: int = 50,
+    ) -> list[Message]:
+        """Return recent shared history for a guild/DM scope, oldest first."""
+        gid = str(guild_id) if guild_id is not None else None
+        return await asyncio.to_thread(self._fetch_global_history, gid, limit)
+
     async def clear_history(self, user_id: int | str) -> int:
         """Delete all messages for *user_id*. Returns number of rows deleted."""
         uid = str(user_id)
@@ -129,19 +141,44 @@ class ConversationMemory:
         user_id: int | str,
         max_messages: int = 20,
         system_prompt: str = "You are Dolphin, a helpful AI assistant.",
+        guild_id: int | str | None = None,
+        use_global: bool = True,
     ) -> str:
-        """Build a simple instruction prompt from the user's history.
+        """Build a simple instruction prompt from conversation history.
 
-        TinyDolphin can sometimes immediately emit an end token when prompted
-        with raw ChatML markers through older llama.cpp builds. A simple
-        User/Assistant transcript is less fancy, but much more reliable on the
-        Raspberry Pi llama-cli path.
+        In servers, the prompt uses recent shared guild memory so the bot can
+        answer questions about things it said to other users. In DMs, it falls
+        back to that user's private history.
         """
-        messages = await self.get_history(user_id, limit=max_messages)
-        parts: list[str] = [system_prompt.strip(), ""]
-        for msg in messages:
-            role = "User" if msg.role == "user" else "Assistant"
-            parts.append(f"{role}: {msg.content.strip()}")
+        uid = str(user_id)
+        if use_global and guild_id is not None:
+            messages = await self.get_global_history(guild_id, limit=max_messages)
+            parts: list[str] = [
+                system_prompt.strip(),
+                "",
+                "Recent shared server memory follows. Use it only if relevant.",
+            ]
+            for msg in messages:
+                if msg.role == "assistant":
+                    speaker = "Assistant"
+                elif msg.role == "system":
+                    speaker = "System"
+                elif msg.user_id == uid:
+                    speaker = "Current user"
+                else:
+                    speaker = f"User {msg.user_id[-4:]}"
+                content = msg.content.strip()
+                if content:
+                    parts.append(f"{speaker}: {content}")
+        else:
+            messages = await self.get_history(user_id, limit=max_messages)
+            parts = [system_prompt.strip(), ""]
+            for msg in messages:
+                role = "User" if msg.role == "user" else "Assistant"
+                content = msg.content.strip()
+                if content:
+                    parts.append(f"{role}: {content}")
+
         parts.append("Assistant:")
         return "\n".join(parts)
 
@@ -176,6 +213,42 @@ class ConversationMemory:
                 (user_id, limit),
             ).fetchall()
         # Reverse so oldest is first
+        return [
+            Message(
+                id=r["id"],
+                user_id=r["user_id"],
+                guild_id=r["guild_id"],
+                role=r["role"],
+                content=r["content"],
+                created_at=r["created_at"],
+            )
+            for r in reversed(rows)
+        ]
+
+    def _fetch_global_history(self, guild_id: str | None, limit: int) -> list[Message]:
+        with self._connect() as conn:
+            if guild_id is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, guild_id, role, content, created_at
+                    FROM messages
+                    WHERE guild_id IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, user_id, guild_id, role, content, created_at
+                    FROM messages
+                    WHERE guild_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (guild_id, limit),
+                ).fetchall()
         return [
             Message(
                 id=r["id"],
