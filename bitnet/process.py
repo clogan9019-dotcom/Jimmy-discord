@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import AsyncIterator
@@ -44,6 +47,7 @@ class BitNetProcess:
         context_length: int = 4096,
         python_executable: str | None = None,
         executable_path: str | Path | None = None,
+        gpu_layers: str | int = "auto",
     ) -> None:
         self._src_dir = Path(src_dir).resolve()
         self._model_path = Path(model_path).resolve()
@@ -59,6 +63,87 @@ class BitNetProcess:
                 "llama-cli.exe" if os.name == "nt" else "llama-cli"
             )
             self._custom_executable = False
+        self._gpu_layers_setting = str(os.environ.get("JIMMY_GPU_LAYERS", gpu_layers)).strip()
+        self._gpu_detected = self._detect_gpu()
+        self._gpu_layers = self._resolve_gpu_layers(self._gpu_layers_setting)
+
+    @property
+    def gpu_layers(self) -> int:
+        return self._gpu_layers
+
+    @property
+    def gpu_detected(self) -> bool:
+        return self._gpu_detected
+
+    @staticmethod
+    def _run_probe(command: list[str], timeout: float = 2.0) -> str:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except Exception:
+            return ""
+        return (result.stdout or "") + "\n" + (result.stderr or "")
+
+    def _detect_gpu(self) -> bool:
+        """Best-effort GPU detection for deciding llama.cpp -ngl.
+
+        Raspberry Pi 4 exposes a VideoCore DRM device, but this build path does
+        not use it for llama.cpp acceleration, so ARM Linux defaults to CPU.
+        """
+        forced = os.environ.get("JIMMY_FORCE_GPU", "").strip().lower()
+        if forced in {"1", "true", "yes", "on"}:
+            return True
+
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+
+        if system == "windows":
+            ps = shutil.which("powershell") or shutil.which("pwsh")
+            if not ps:
+                return False
+            output = self._run_probe([
+                ps,
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join ';'",
+            ])
+            names = [n.strip().lower() for n in output.replace("\r", "").split(";") if n.strip()]
+            bad = ("microsoft basic", "remote display", "parsec", "virtual", "mirror")
+            good = ("nvidia", "geforce", "rtx", "gtx", "quadro", "amd", "radeon", "intel", "arc")
+            return any(any(g in n for g in good) and not any(b in n for b in bad) for n in names)
+
+        if system == "darwin":
+            return True  # Metal-capable Macs, if a Metal llama.cpp binary is used.
+
+        if system == "linux":
+            if shutil.which("nvidia-smi") and self._run_probe(["nvidia-smi", "-L"]):
+                return True
+            # Avoid enabling GPU on Raspberry Pi / ARM SBC DRM devices.
+            if machine in {"aarch64", "arm64"} or machine.startswith("arm"):
+                return False
+            if Path("/dev/dri").exists() and list(Path("/dev/dri").glob("renderD*")):
+                return True
+
+        return False
+
+    def _resolve_gpu_layers(self, value: str) -> int:
+        normalized = (value or "auto").strip().lower()
+        if normalized in {"", "auto", "detect"}:
+            return 999 if self._gpu_detected else 0
+        if normalized in {"all", "max", "gpu"}:
+            return 999
+        if normalized in {"off", "false", "no", "cpu", "none"}:
+            return 0
+        try:
+            return max(0, int(normalized))
+        except ValueError:
+            log.warning("Invalid gpu_layers=%r; using auto detection.", value)
+            return 999 if self._gpu_detected else 0
 
     def _subprocess_env(self) -> dict[str, str]:
         """Environment for BitNet subprocesses.
@@ -196,7 +281,7 @@ class BitNetProcess:
             "-n", str(max_tokens),
             "-t", str(self._threads),
             "-p", prompt,
-            "-ngl", "0",
+            "-ngl", str(self._gpu_layers),
             "-c", str(self._context_length),
             "--temp", str(temperature),
             "--top-p", str(top_p),
@@ -216,7 +301,12 @@ class BitNetProcess:
             "--log-disable",
         ]
 
-        log.debug("Spawning inference: %s", " ".join(cmd[:8]) + " …")
+        log.debug(
+            "Spawning inference: %s … | gpu_detected=%s gpu_layers=%d",
+            " ".join(cmd[:8]),
+            self._gpu_detected,
+            self._gpu_layers,
+        )
 
         try:
             proc = await asyncio.create_subprocess_exec(
