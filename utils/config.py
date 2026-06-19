@@ -15,6 +15,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     },
     "bitnet": {
         "src_dir": "./bitnet_cpp_src",
+        "executable": "",
         "model": "./models/heretic/ggml-model-i2_s.gguf",
         "threads": 4,
         "context": 4096,
@@ -79,6 +80,10 @@ class Config:
     @property
     def bitnet_src_dir(self) -> str:
         return str(self.get("bitnet", "src_dir", default="./bitnet_cpp_src"))
+
+    @property
+    def bitnet_executable(self) -> str:
+        return str(self.get("bitnet", "executable", default=""))
 
     @property
     def bitnet_model(self) -> str:
