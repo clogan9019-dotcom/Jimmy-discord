@@ -55,6 +55,7 @@ class DiscordBitNetBot(commands.Bot):
             threads=config.bitnet_threads,
             context_length=config.bitnet_context,
             executable_path=config.bitnet_executable or None,
+            gpu_layers=config.bitnet_gpu_layers,
         )
 
         self.memory = ConversationMemory(db_path=config.database_file)
