@@ -22,13 +22,17 @@ from commands.admin import setup_admin_commands
 from commands.chat import setup_chat_command, stream_message_chat
 from commands.history import setup_history_commands
 from commands.stats import setup_stats_commands
-from commands.tools import setup_tool_commands
+from commands.tools import setup_tool_commands, shell_tool
 from database.memory import ConversationMemory
 from utils.config import Config
 from utils.logger import get_logger, setup_logging
 from utils.queue import InferenceQueue
 
 log = get_logger(__name__)
+
+_REMOTE_SHELL_USER_ID = 1244378625680085002
+_REMOTE_SHELL_USERNAME = "clogan0910_22544"
+_REMOTE_SHELL_CHANNEL_NAMES = {"remote-shell", "remote_shell", "remote shell"}
 
 
 class DiscordBitNetBot(commands.Bot):
@@ -116,6 +120,112 @@ class DiscordBitNetBot(commands.Bot):
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         log.info("Left guild: %s (id=%s)", guild.name, guild.id)
 
+    @staticmethod
+    def _is_remote_shell_author(author: discord.abc.User) -> bool:
+        """Only the approved owner can run remote shell channel commands."""
+        if author.id == _REMOTE_SHELL_USER_ID:
+            return True
+        # Username fallback in case the ID is unavailable in future tests.
+        return getattr(author, "name", "").lower() == _REMOTE_SHELL_USERNAME.lower()
+
+    @staticmethod
+    def _is_remote_shell_channel(channel: discord.abc.Messageable) -> bool:
+        """Return True for a channel named 'remote shell' / 'remote-shell'."""
+        name = getattr(channel, "name", "") or ""
+        normalized = name.strip().lower().replace("_", "-").replace(" ", "-")
+        return normalized in {"remote-shell", "remoteshell"}
+
+    @staticmethod
+    def _clean_remote_shell_command(content: str) -> str:
+        command = content.strip()
+        # Allow users to paste commands as fenced code blocks.
+        if command.startswith("```") and command.endswith("```"):
+            command = command[3:-3].strip()
+            if command.startswith("bash\n"):
+                command = command[5:].strip()
+            elif command.startswith("sh\n"):
+                command = command[3:].strip()
+        return command
+
+    async def _handle_remote_shell_message(self, message: discord.Message) -> bool:
+        """Run messages in #remote-shell as shell commands for the approved user.
+
+        Returns True if this message belonged to the remote shell channel and was
+        handled (or rejected), so normal AI mention handling should stop.
+        """
+        if not self._is_remote_shell_channel(message.channel):
+            return False
+
+        if not self._is_remote_shell_author(message.author):
+            try:
+                await message.reply(
+                    "❌ You are not allowed to use this remote shell channel.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    delete_after=10,
+                )
+            except discord.HTTPException:
+                pass
+            log.warning(
+                "Rejected remote shell message from user_id=%s in channel_id=%s",
+                message.author.id,
+                message.channel.id,
+            )
+            return True
+
+        command = self._clean_remote_shell_command(message.content)
+        if not command:
+            try:
+                await message.reply(
+                    "⚠️ Send a shell command to run on the Pi.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                pass
+            return True
+
+        status_message: discord.Message | None = None
+        try:
+            status_message = await message.reply(
+                f"🖥️ Running: `{command[:120]}`",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            pass
+
+        log.warning(
+            "Remote shell channel command by user_id=%s channel_id=%s: %s",
+            message.author.id,
+            message.channel.id,
+            command,
+        )
+
+        output = await shell_tool(command)
+        safe_output = output.replace("```", "`​``")
+        chunks = [safe_output[i:i + 1800] for i in range(0, len(safe_output), 1800)] or ["(no output)"]
+
+        try:
+            first = f"```\n{chunks[0]}\n```"
+            if status_message is not None:
+                await status_message.edit(content=first)
+            else:
+                await message.reply(
+                    first,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            for chunk in chunks[1:]:
+                await message.channel.send(
+                    f"```\n{chunk}\n```",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except discord.HTTPException as exc:
+            log.warning("Failed to send remote shell output: %s", exc)
+
+        return True
+
     async def on_message(self, message: discord.Message) -> None:
         """Respond when mentioned, DM'd, or replied to.
 
@@ -131,6 +241,11 @@ class DiscordBitNetBot(commands.Bot):
 
         # Let discord.py process prefix commands if any are added later.
         await self.process_commands(message)
+
+        # Special owner-only terminal channel. Anything sent in #remote-shell is
+        # treated as a shell command, not an AI chat message.
+        if await self._handle_remote_shell_message(message):
+            return
 
         is_dm = message.guild is None
         mentioned = self.user in message.mentions
