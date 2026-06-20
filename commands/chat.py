@@ -198,7 +198,7 @@ def _clean_final_answer(text: str) -> str:
 
     # Cut off fake transcript continuation. If the model starts directly with a
     # fake user turn, treat that as empty so fallback generation can try again.
-    for prefix in ("User:", "Current user:", "Other user"):
+    for prefix in ("User:", "You:", "Current user:", "Other user"):
         if text.lstrip().startswith(prefix):
             return ""
     for marker in (
@@ -218,6 +218,16 @@ def _clean_final_answer(text: str) -> str:
         text = text[:leading] + text.lstrip()[len("Assistant:"):].lstrip()
         text = text.strip()
 
+    # If the model starts a fake transcript turn later in the answer, cut the
+    # response there. This catches same-line continuations like
+    # "... event horizon. Assistant: Imagine..." as well as "You:" turns.
+    role_match = re.search(
+        r"(?i)(?:^|\s)(?:Assistant|User|You|Current user|Other user(?:\s+\d+)?)\s*:",
+        text,
+    )
+    if role_match:
+        text = text[: role_match.start()].strip()
+
     blocked_phrases = (
         "You may use lightweight tools",
         "To use web search",
@@ -235,7 +245,7 @@ def _clean_final_answer(text: str) -> str:
         stripped = line.strip()
         if any(phrase in stripped for phrase in blocked_phrases):
             continue
-        if stripped in {"User:", "Current user:", "Assistant:"}:
+        if stripped in {"User:", "You:", "Current user:", "Assistant:"}:
             continue
         cleaned_lines.append(line)
     return _trim_repetitive_or_template_text("\n".join(cleaned_lines))
