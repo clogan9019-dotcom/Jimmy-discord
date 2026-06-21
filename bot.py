@@ -30,8 +30,14 @@ from utils.queue import InferenceQueue
 
 log = get_logger(__name__)
 
-_REMOTE_SHELL_USER_ID = 1244378625680085002
-_REMOTE_SHELL_USERNAME = "clogan0910_22544"
+_REMOTE_SHELL_USER_IDS = {
+    1244378625680085002,  # clogan0910_22544
+    1277011841284833474,  # dragonmasterjkb
+}
+_REMOTE_SHELL_USERNAMES = {
+    "clogan0910_22544",
+    "dragonmasterjkb",
+}
 _REMOTE_SHELL_CHANNEL_NAMES = {"remote-shell", "remote_shell", "remote shell"}
 
 
@@ -122,11 +128,11 @@ class DiscordBitNetBot(commands.Bot):
 
     @staticmethod
     def _is_remote_shell_author(author: discord.abc.User) -> bool:
-        """Only the approved owner can run remote shell channel commands."""
-        if author.id == _REMOTE_SHELL_USER_ID:
+        """Only approved users can run remote shell channel commands."""
+        if author.id in _REMOTE_SHELL_USER_IDS:
             return True
         # Username fallback in case the ID is unavailable in future tests.
-        return getattr(author, "name", "").lower() == _REMOTE_SHELL_USERNAME.lower()
+        return getattr(author, "name", "").lower() in _REMOTE_SHELL_USERNAMES
 
     @staticmethod
     def _is_remote_shell_channel(channel: discord.abc.Messageable) -> bool:
